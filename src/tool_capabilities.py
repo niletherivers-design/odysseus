@@ -94,7 +94,7 @@ _register(
     result_integrity=ResultIntegrity.EXTERNAL_UNTRUSTED,
 )
 _register(
-    {"bilingual_brain_receipts", "get_workspace", "glob", "grep", "ls", "read_file"},
+    {"bilingual_brain_receipts", "reva_health", "get_workspace", "glob", "grep", "ls", "read_file"},
     ToolEffect.READ_WORKSPACE,
     result_integrity=ResultIntegrity.WORKSPACE_UNTRUSTED,
 )

@@ -1747,3 +1747,30 @@ def function_call_to_tool_block(name: str, arguments: str) -> Optional[ToolBlock
         content = json.dumps(args)
 
     return ToolBlock(tool_type, content)
+
+
+# Read-only REVA runtime health and self-diagnostic inspection.
+FUNCTION_TOOL_SCHEMAS.append(
+    {
+        "type": "function",
+        "function": {
+            "name": "reva_health",
+            "description": (
+                "Inspect local REVA runtime health without contacting the "
+                "Bilingual Brain, invoking a model, or generating evidence. "
+                "Checks REVA tool registration, Brain configuration validity "
+                "without returning secret values, receipt writer/reader "
+                "configuration, and the latest persisted receipt's local "
+                "integrity and MeshCore policy invariants when available. "
+                "Receipt-derived information remains workspace-untrusted and "
+                "does NOT semantically verify model claims. "
+                "PRODUCTION_AUTHORITY remains OFF."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+    }
+)

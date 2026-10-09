@@ -191,3 +191,17 @@ TOOL_HANDLERS[
     "bilingual_brain_receipts"
 ] = handle_bilingual_brain_receipts
 
+
+# Read-only REVA runtime health / self-diagnostic inspection.
+from .reva_health_tool import (  # noqa: E402
+    handle_reva_health,
+)
+
+TOOL_TAGS.add(
+    "reva_health"
+)
+
+TOOL_HANDLERS[
+    "reva_health"
+] = handle_reva_health
+
