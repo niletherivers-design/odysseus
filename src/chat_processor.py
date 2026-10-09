@@ -325,6 +325,8 @@ class ChatProcessor:
                         "Pinned memory context. Some pinned memories are only "
                         f"included when relevant:\n- {pinned_text}"
                     ),
+                    provenance_origin="local",
+                    arm_tool_gate=False,
                 ))
                 for m in selected_pinned:
                     self._last_used_memories.append({"text": m["text"], "category": m.get("category", "fact"), "type": "pinned"})
@@ -342,6 +344,8 @@ class ChatProcessor:
                             "Memory context. Do not reference unless the user asks "
                             f"about these topics.\n{ext_text}"
                         ),
+                        provenance_origin="local",
+                        arm_tool_gate=False,
                     ))
                     for m in relevant:
                         self._last_used_memories.append({"text": m["text"], "category": m.get("category", "fact"), "type": "recalled"})
@@ -520,6 +524,8 @@ class ChatProcessor:
                 preface.append(untrusted_context_message(
                     "available skills index",
                     "\n".join(lines),
+                    provenance_origin="local",
+                    arm_tool_gate=False,
                 ))
 
         return preface, rag_sources, web_sources

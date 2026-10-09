@@ -156,3 +156,38 @@ from src.tool_implementations import (  # noqa: E402, F401
     do_manage_tasks,
     do_api_call,
 )
+
+# Dedicated Bilingual Brain integration.
+# Registered here so the existing dynamic TOOL_HANDLERS dispatcher owns
+# execution; no new branch is added to src/tool_execution.py.
+from .bilingual_brain_tool import (  # noqa: E402
+    handle_bilingual_brain,
+)
+
+if not isinstance(TOOL_HANDLERS, dict):
+    raise TypeError(
+        "TOOL_HANDLERS must be a dictionary"
+    )
+
+TOOL_TAGS.add(
+    "bilingual_brain"
+)
+
+TOOL_HANDLERS[
+    "bilingual_brain"
+] = handle_bilingual_brain
+
+
+# Read-only persisted Bilingual Brain receipt inspection.
+from .bilingual_brain_receipts_tool import (  # noqa: E402
+    handle_bilingual_brain_receipts,
+)
+
+TOOL_TAGS.add(
+    "bilingual_brain_receipts"
+)
+
+TOOL_HANDLERS[
+    "bilingual_brain_receipts"
+] = handle_bilingual_brain_receipts
+

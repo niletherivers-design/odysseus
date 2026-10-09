@@ -1367,6 +1367,160 @@ def _repair_document_function_args(tool_type: str, arguments: str) -> Optional[d
     return None
 
 
+
+# Dedicated Odysseus -> Bilingual Brain bridge.
+# MeshCore semantics remain behind the Brain HTTP boundary.
+FUNCTION_TOOL_SCHEMAS.append(
+    {
+        "type": "function",
+        "function": {
+            "name": "bilingual_brain",
+            "description": (
+                "Run the local Bilingual Brain orchestration engine. "
+                "Use this tool for substantive research, analysis, evaluation, "
+                "investigation, assessment, comparison, problem-solving, "
+                "uncertainty tracking, or iterative reasoning when the result "
+                "should be bound to fresh signed MeshCore provenance and the "
+                "six-stage MeshCore evidence chain. When this tool is advertised "
+                "for a turn and the user asks for that kind of substantive "
+                "analysis, prefer calling bilingual_brain instead of performing "
+                "the analysis directly in ordinary assistant prose. Do not use "
+                "it merely for casual chat or a simple factual lookup. MeshCore "
+                "evidence is always enabled by this tool. Model-generated factual "
+                "claims are NOT automatically verified; they remain UNKNOWN "
+                "unless separately supported. PRODUCTION_AUTHORITY remains OFF."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "goal": {
+                        "type": "string",
+                        "description": (
+                            "The analysis/research/problem-solving goal."
+                        ),
+                    },
+                    "source_lang": {
+                        "type": "string",
+                        "description": (
+                            "Input language. Defaults to English."
+                        ),
+                    },
+                    "target_lang": {
+                        "type": "string",
+                        "description": (
+                            "Output language. Defaults to English."
+                        ),
+                    },
+                    "iterations": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10,
+                        "description": (
+                            "Brain iterations. Defaults to 1."
+                        ),
+                    },
+                    "execute": {
+                        "type": "boolean",
+                        "description": (
+                            "When true, run the Brain model. "
+                            "When false, perform the structural/dry-run path. "
+                            "Defaults to true."
+                        ),
+                    },
+                    "horizon_years": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000,
+                        "description": (
+                            "Planning horizon. Defaults to 10."
+                        ),
+                    },
+                    "evolve": {
+                        "type": "boolean",
+                        "description": (
+                            "Enable the Brain evolutionary path. "
+                            "Defaults to false."
+                        ),
+                    },
+                    "seed_genome": {
+                        "type": "string",
+                        "description": (
+                            "Initial Brain genome identifier. Defaults to A."
+                        ),
+                    },
+                },
+                "required": [
+                    "goal",
+                ],
+            },
+        },
+    }
+)
+
+
+# Read-only inspector for persisted Bilingual Brain evidence receipts.
+FUNCTION_TOOL_SCHEMAS.append(
+    {
+        "type": "function",
+        "function": {
+            "name": "bilingual_brain_receipts",
+            "description": (
+                "Read persisted Bilingual Brain evidence receipts from the "
+                "Odysseus workspace. Supports listing receipts, showing the "
+                "latest receipt, reading a named receipt, and recomputing its "
+                "SHA-256/security-policy checks. This tool is read-only. "
+                "Receipt content remains workspace-untrusted and does NOT "
+                "semantically verify model-generated claims. It does not run "
+                "the Brain model or generate new MeshCore evidence. "
+                "PRODUCTION_AUTHORITY remains OFF."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "list",
+                            "latest",
+                            "read",
+                            "verify",
+                        ],
+                        "description": (
+                            "Receipt operation. Defaults to list."
+                        ),
+                    },
+                    "receipt": {
+                        "type": "string",
+                        "description": (
+                            "Canonical receipt filename. Required for "
+                            "read and verify."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "description": (
+                            "Maximum receipts returned by list. "
+                            "Defaults to 10."
+                        ),
+                    },
+                    "expected_sha256": {
+                        "type": "string",
+                        "description": (
+                            "Optional full 64-character SHA-256 expected "
+                            "for verify. Without it, verify still recomputes "
+                            "the digest and checks the filename digest prefix "
+                            "and receipt security policy."
+                        ),
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    }
+)
+
 def function_call_to_tool_block(name: str, arguments: str) -> Optional[ToolBlock]:
     """Convert a native function call into a ToolBlock for the existing execution pipeline."""
     tool_type = _TOOL_NAME_MAP.get(name, name)

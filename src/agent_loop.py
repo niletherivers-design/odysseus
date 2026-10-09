@@ -519,11 +519,40 @@ _DOMAIN_RULES = {
 - Use `resolve_contact` to look up a contact's email or phone number by name. Searches the CardDAV address book and sent email history.
 - Use `manage_contact` to list, add, update, or delete contacts in the address book.
 - Do NOT use `manage_memory` for contact lookups — contact details live in the address book, not memory.""",
+    "brain_receipts": """\
+## Bilingual Brain receipt rules
+- Use `bilingual_brain_receipts` only for persisted Bilingual Brain / MeshCore evidence receipts.
+- This tool is read-only. Receipt content remains workspace-untrusted.
+- Receipt integrity/policy checks do NOT semantically verify model-generated factual claims.
+- Do not generate new Brain/MeshCore evidence merely to inspect an existing receipt.
+- PRODUCTION_AUTHORITY remains OFF.""",
     "integrations": """\
 ## Integration/API rules
 - To query or control a configured service integration (Home Assistant, Miniflux, Gitea, Linkding, Jellyfin, or any other registered service), use `api_call` with the integration name, HTTP method, path, and optional JSON body.
 - Do not use shell, curl, or `app_api` to reach a user's connected integration when `api_call` is available.""",
 }
+
+
+# Domain policy for the native Bilingual Brain analysis tool.
+#
+# Keep this distinct from brain_receipts:
+# - bilingual_brain executes substantive Brain analysis and forces the
+#   existing MeshCore evidence bridge.
+# - bilingual_brain_receipts only reads persisted receipt artifacts.
+#
+# Structural MeshCore evidence does not automatically verify model-generated
+# semantic claims, and production authority remains OFF.
+_DOMAIN_RULES["bilingual_brain"] = (
+    "Bilingual Brain execution rule: Use `bilingual_brain` only for explicit "
+    "substantive analysis, research, evaluation, investigation, assessment, "
+    "comparison, reasoning, or determination requests selected for the "
+    "Bilingual Brain. The existing handler forces MeshCore evidence generation. "
+    "Model-generated claims are not automatically verified, and "
+    "PRODUCTION_AUTHORITY remains OFF. Do not use `bilingual_brain` merely to "
+    "show, list, read, retrieve, or verify persisted evidence receipts; use "
+    "`bilingual_brain_receipts` for receipt access."
+)
+
 
 _DOMAIN_TOOL_MAP = {
     "web": set(WEB_TOOL_NAMES),
@@ -536,6 +565,8 @@ _DOMAIN_TOOL_MAP = {
     "files": {"bash", "python", "read_file", "write_file", "edit_file", "apply_patch", "todowrite", "grep", "glob", "ls", "get_workspace", "manage_bg_jobs"},
     "settings": {"manage_settings", "manage_endpoints", "manage_mcp", "manage_webhooks", "manage_tokens", "app_api"},
     "contacts": {"resolve_contact", "manage_contact"},
+    "brain_receipts": {"bilingual_brain_receipts"},
+    "bilingual_brain": {"bilingual_brain"},
     "integrations": {"api_call"},
 }
 
@@ -848,17 +879,35 @@ def _assemble_prompt(tool_names: set, disabled_tools: set = None, compact: bool 
     included = tool_names - disabled
 
     if compact:
-        tool_lines = []
-        for name, _default_section in TOOL_SECTIONS.items():
-            if name in included:
-                tool_lines.append(f"- `{name}`")
+        # Compact/API prompts must advertise the already-filtered route tool
+        # names directly. Some schema-backed tools (including bilingual_brain)
+        # intentionally do not have legacy TOOL_SECTIONS entries.
+        tool_lines = [
+            f"- `{name}`"
+            for name in sorted(included)
+        ]
         parts = [
             "You are an AI assistant with native tool/function calling. "
             "Only the tool schemas provided by the API are available for this turn. "
-            "Use native tool calls when action is needed; do not write tool syntax or tool instructions in chat.",
+            "Use native tool calls when action is needed; do not write tool syntax or tool instructions in chat "
+            "unless a tool-specific compatibility rule below explicitly allows it.",
             "## Available tools\n" + ("\n".join(tool_lines) if tool_lines else "none"),
             _API_AGENT_RULES,
         ]
+        if "bilingual_brain" in included:
+            parts.append(
+                "Bilingual Brain selection and compatibility rule: When `bilingual_brain` is advertised and "
+                "the user asks to analyze, research, evaluate, investigate, assess, compare, reason through, "
+                "or determine a substantive question, select `bilingual_brain` instead of answering that "
+                "analysis directly yourself. Do not select it merely for casual chat or a simple factual lookup. "
+                "This is a model routing instruction, not a provider-forced tool choice. Prefer a native function "
+                "call to `bilingual_brain`. If this provider/model cannot emit native `tool_calls` for "
+                "`bilingual_brain`, emit exactly one fenced ```json block containing only an object with keys "
+                "`tool` and `args`, where `tool` is `bilingual_brain` and `args` contains the arguments required "
+                "by the advertised schema. Once you select `bilingual_brain`, do not perform the requested "
+                "analysis yourself before the tool call. This compatibility format is allowed only for "
+                "`bilingual_brain`; do not use generic fenced tool syntax for any other tool."
+            )
         parts.extend(_domain_rules_for_tools(included))
         return "\n\n".join(parts)
 
@@ -1385,6 +1434,124 @@ def _assistant_requested_followup(messages: List[Dict]) -> bool:
     return False
 
 
+def _bilingual_brain_receipt_args_from_text(
+    text: str,
+) -> Optional[Dict[str, object]]:
+    """Map explicit Bilingual Brain receipt requests to read-only tool args.
+
+    This performs routing only. It never reads receipt files itself and never
+    changes receipt/MeshCore semantics.
+    """
+
+    raw = str(text or "").strip()
+
+    if not raw:
+        return None
+
+    q = raw.lower()
+
+    # Avoid hijacking ordinary shopping/payment receipts. A receipt request
+    # must explicitly name the Brain/MeshCore/evidence context.
+    if (
+        re.search(r"\breceipts?\b", q) is None
+        or re.search(
+            r"\b(?:bilingual\s+brain|brain|meshcore|evidence)\b",
+            q,
+        ) is None
+    ):
+        return None
+
+    filename_match = re.search(
+        r"\b"
+        r"(\d{8})T"
+        r"(\d{6})\."
+        r"(\d{6})Z-"
+        r"([0-9a-fA-F]{16})"
+        r"\.json\b",
+        raw,
+    )
+
+    receipt_name = None
+
+    if filename_match:
+        receipt_name = (
+            f"{filename_match.group(1)}"
+            f"T{filename_match.group(2)}"
+            f".{filename_match.group(3)}"
+            f"Z-{filename_match.group(4).lower()}"
+            ".json"
+        )
+
+    verify_intent = bool(
+        re.search(
+            r"\b(?:verify|check|validate|integrity|hash|sha-?256)\b",
+            q,
+        )
+    )
+
+    # Merely discussing a receipt, receipt system, or evidence-receipt
+    # integration is not a request to read persisted receipt data.
+    #
+    # Require an explicit receipt-access intent unless the user supplied a
+    # canonical receipt filename. This prevents substantive Bilingual Brain
+    # analysis requests such as:
+    #
+    #   "Analyze with the Bilingual Brain whether the current
+    #    evidence-receipt integration..."
+    #
+    # from being hijacked by the read-only receipt router.
+    receipt_access_intent = bool(
+        re.search(
+            r"\b(?:"
+            r"show|list|read|open|view|get|fetch|retrieve|display|inspect|"
+            r"verify|check|validate|integrity|hash|sha-?256|"
+            r"latest|last|newest|recent|"
+            r"what|which|all|available"
+            r")\b",
+            q,
+        )
+    )
+
+    if (
+        receipt_name is None
+        and not receipt_access_intent
+    ):
+        return None
+
+    if receipt_name is not None:
+        if verify_intent:
+            return {
+                "action": "verify",
+                "receipt": receipt_name,
+            }
+
+        return {
+            "action": "read",
+            "receipt": receipt_name,
+        }
+
+    if (
+        re.search(r"\breceipts\b", q)
+        and re.search(
+            r"\b(?:list|show|all|available|what|which)\b",
+            q,
+        )
+    ):
+        return {
+            "action": "list",
+            "limit": 10,
+        }
+
+    # The frozen reader requires a concrete filename for action=verify.
+    # For "verify my latest receipt", route to latest first. The latest action
+    # already recomputes the receipt digest, filename-prefix check, and policy
+    # validity without mutating anything. A named receipt can then be subjected
+    # to the explicit verify action if needed.
+    return {
+        "action": "latest",
+    }
+
+
 def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, object]:
     """Classify only whether this turn deserves domain tool retrieval.
 
@@ -1431,7 +1598,46 @@ def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, o
         domains.add("documents")
     if "notes_calendar_tasks" not in domains and has(r"\bwrite\b"):
         domains.add("documents")
-    if has(r"\b(search|web|google|look up|latest|news|current|weather|forecast|stock price|price of|website|url|https?://|www\.)\b"):
+    _receipt_intent = (
+        _bilingual_brain_receipt_args_from_text(
+            retrieval_query
+        )
+        is not None
+    )
+
+    if _receipt_intent:
+        domains.add("brain_receipts")
+
+    # Explicit substantive requests naming the Bilingual Brain receive a
+    # deterministic domain seed so the bilingual_brain schema is guaranteed
+    # to survive tool retrieval. This is selection only; execution still
+    # passes through the existing resolver, capability, security, and
+    # dispatcher boundaries.
+    _explicit_bilingual_brain_analysis = bool(
+        re.search(
+            r"\bbilingual\s+brain\b",
+            retrieval_query,
+            re.IGNORECASE,
+        )
+        and re.match(
+            r"^\s*(?:(?:please|can\s+you|could\s+you|would\s+you)\s+)?"
+            r"(?:analy[sz]e|research|evaluate|investigate|assess|compare|"
+            r"reason(?:\s+through)?|determine)\b",
+            retrieval_query,
+            re.IGNORECASE,
+        )
+    )
+
+    if (
+        _explicit_bilingual_brain_analysis
+        and not _receipt_intent
+    ):
+        domains.add("bilingual_brain")
+
+    if (
+        not _receipt_intent
+        and has(r"\b(search|web|google|look up|latest|news|weather|forecast|stock price|price of|website|url|https?://|www\.)\b")
+    ):
         domains.add("web")
     if has(
         r"\b(wyszukaj|wyszukać|wyszukac)\b.*\b(internet|internecie|online|web)\b",
@@ -1441,7 +1647,10 @@ def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, o
         domains.add("web")
     if has(r"\b(research|deep dive|investigate|look into)\b"):
         domains.add("web")
-    if has(r"\b(open|show|toggle|turn on|turn off|disable|enable|switch model|change model|settings|theme|panel)\b"):
+    if (
+        not _receipt_intent
+        and has(r"\b(open|show|toggle|turn on|turn off|disable|enable|switch model|change model|settings|theme|panel)\b")
+    ):
         domains.add("ui")
     if has(r"\b(session|chat history|rename chat|delete chat|archive chat|fork chat|list chats)\b"):
         domains.add("sessions")
@@ -1474,8 +1683,11 @@ def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, o
     # and the tool never reached the schema filter. Detect it explicitly so the
     # "integrations" domain seeds api_call deterministically (see
     # _DOMAIN_TOOL_MAP), independent of embedding retrieval.
-    if has(r"\bapi[ _]call\b", r"\bintegrations?\b",
-           r"\b(?:home ?assistant|miniflux|gitea|linkding|jellyfin)\b"):
+    if has(
+        r"\bapi[ _]call\b",
+        r"\b(?:configured|connected|registered)\s+integrations?\b",
+        r"\b(?:home ?assistant|miniflux|gitea|linkding|jellyfin)\b",
+    ):
         domains.add("integrations")
 
     low_signal = not continuation and not domains
@@ -2722,6 +2934,8 @@ def _build_system_prompt(
                     _skills_message = untrusted_context_message(
                         "skills",
                         _skills_text,
+                        provenance_origin="local",
+                        arm_tool_gate=False,
                     )
                 else:
                     _skills_message = None
@@ -2869,13 +3083,18 @@ def _build_base_prompt(
 
     if relevant_tools is not None:
         # RAG mode: trust the relevant_tools set as already-composed.
-        # get_tools_for_query starts from ALWAYS_AVAILABLE and may
-        # *discard* tools that conflict with the query's intent (e.g.
-        # drop manage_memory for clear contact-save patterns). Unioning
-        # ALWAYS_AVAILABLE back in here used to silently undo those
-        # drops. Only force-include the irreducible loop primitives
-        # (ask_user, update_plan) as belt-and-suspenders.
-        tool_names = set(relevant_tools) | {"ask_user", "update_plan"}
+        #
+        # Compact/API prompts must describe exactly the tools whose schemas
+        # are actually sent for this route. Previously ask_user/update_plan
+        # were added here only to the textual prompt, while
+        # _tool_schemas_for_route() used relevant_tools directly. That could
+        # advertise phantom tools and hide the one real selected tool from
+        # small/local models.
+        tool_names = set(relevant_tools)
+        if not compact:
+            # Preserve the historical belt-and-suspenders loop primitives for
+            # non-compact/fenced-tool prompting.
+            tool_names |= {"ask_user", "update_plan"}
         if needs_admin:
             tool_names |= _ADMIN_TOOLS
         agent_prompt = _assemble_prompt(tool_names, disabled, compact=compact)
@@ -2937,6 +3156,91 @@ def _build_base_prompt(
 
     return agent_prompt, skill_index_block
 
+
+
+
+def _extract_bilingual_brain_text_json_call(
+    round_response: str,
+    available_tool_names,
+):
+    """Recover one strict bilingual_brain call emitted as fenced JSON."""
+
+    available = {
+        str(name)
+        for name in (available_tool_names or [])
+        if name
+    }
+
+    if "bilingual_brain" not in available:
+        return None
+
+    matches = list(
+        re.finditer(
+            r"```json\s*(\{[\s\S]*?\})\s*```",
+            str(round_response or ""),
+            flags=re.IGNORECASE,
+        )
+    )
+
+    if len(matches) != 1:
+        return None
+
+    try:
+        payload = json.loads(matches[0].group(1))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    if set(payload) != {"tool", "args"}:
+        return None
+
+    if payload.get("tool") != "bilingual_brain":
+        return None
+
+    args = payload.get("args")
+    if not isinstance(args, dict):
+        return None
+
+    # Narrow compatibility alias for local models that call the requested
+    # task text "query" instead of the bilingual_brain schema's required
+    # "goal". This applies only inside this strict bilingual_brain JSON
+    # recovery path and does not loosen generic fenced-tool execution.
+    if "goal" not in args and isinstance(args.get("query"), str):
+        query = args.get("query", "").strip()
+        if query:
+            args = dict(args)
+            args["goal"] = query
+            args.pop("query", None)
+
+    try:
+        arguments = json.dumps(
+            args,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        return None
+
+    block = function_call_to_tool_block(
+        "bilingual_brain",
+        arguments,
+    )
+
+    if block is None or block.tool_type != "bilingual_brain":
+        return None
+
+    return (
+        block,
+        {
+            "name": "bilingual_brain",
+            "arguments": arguments,
+            "compat_text_json": True,
+        },
+    )
 
 
 def _resolve_tool_blocks(
@@ -4440,6 +4744,11 @@ async def stream_agent_loop(
     # backstop. Counting identical repeats — not distinct same-tool calls —
     # lets a legit batch (e.g. 18 calendar events at once) through.
     _call_freq: collections.Counter = collections.Counter()
+
+    # Exact write_file calls that already succeeded during this agent turn.
+    # Weak/local models sometimes replay the same write after seeing success.
+    _successful_write_calls = set()
+
     _force_answer = False  # set by loop-breaker → next round runs with NO tools
     # Supervisor: how many times we've nudged the model after it announced
     # an action without emitting the tool call. Capped to prevent a model
@@ -4486,7 +4795,10 @@ async def stream_agent_loop(
         route_relevant_tools = route_state["relevant_tools"]
         if _force_answer:
             return []
-        if route_state["is_api_model"]:
+        if (
+            route_state["is_api_model"]
+            or route_state["is_ollama_native"]
+        ):
             if route_relevant_tools:
                 schema_names = set(route_relevant_tools)
                 if _needs_admin:
@@ -4598,6 +4910,10 @@ async def stream_agent_loop(
         total_tool_calls += 1
 
         if tool_result_is_successful(approved_result):
+            if approved.tool_name == "write_file":
+                _successful_write_calls.add(
+                    (approved.tool_name, (approved.content or "").strip())
+                )
             for doc_event in _document_stream_events(approved_block):
                 yield f"data: {json.dumps(doc_event)}\n\n"
         if approved_result.get("action") == "suggest":
@@ -4939,22 +5255,143 @@ async def stream_agent_loop(
             bool(all_tool_schemas),
             agent_stream_timeout,
         )
-        async for chunk in stream_llm_with_fallback(
-            _candidates,
-            messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            prompt_type=prompt_type if round_num == 1 else None,
-            tools=all_tool_schemas if all_tool_schemas else None,
-            tool_choice_none=_ody_doc_finetune_mode,
-            timeout=agent_stream_timeout,
-            session_id=session_id,
-            workload=workload,
-            fallback_statuses=fallback_statuses,
-            fallback_on_empty=fallback_on_empty,
-            candidate_request_factory=_candidate_request,
-            candidate_route_descriptors=_candidate_route_descriptors,
-        ):
+        # Deterministic local DeepSeek-R1 -> Bilingual Brain routing.
+        #
+        # Native Ollama advertises the bilingual_brain schema correctly, but
+        # DeepSeek-R1 may ignore that schema and answer substantive analysis
+        # requests directly. For this narrow combination, synthesize the same
+        # native-style tool_calls event the model should have emitted, then let
+        # the existing resolver/security/dispatcher pipeline handle it normally.
+        #
+        # This is intentionally NOT provider tool_choice forcing and does not
+        # enable generic prose/fenced-tool execution.
+        _bilingual_router_text = str(_last_user or "").strip()
+        _deterministic_bilingual_route = (
+            round_num == 1
+            and not guide_only
+            and not _force_answer
+            and _is_ollama_native
+            and "deepseek-r1" in str(model or "").lower()
+            and _relevant_tools is not None
+            and "bilingual_brain" in _relevant_tools
+            and "bilingual_brain" in _tool_names_sent
+            and bool(
+                re.match(
+                    r"^\s*(?:(?:please|can\s+you|could\s+you|would\s+you)\s+)?"
+                    r"(?:analy[sz]e|research|evaluate|investigate|assess|compare|"
+                    r"reason(?:\s+through)?|determine)\b",
+                    _bilingual_router_text,
+                    re.IGNORECASE,
+                )
+            )
+        )
+
+        _receipt_router_text = str(
+            _last_user or ""
+        ).strip()
+
+        _receipt_router_args = (
+            _bilingual_brain_receipt_args_from_text(
+                _receipt_router_text
+            )
+        )
+
+        _deterministic_receipt_route = (
+            round_num == 1
+            and not guide_only
+            and not _force_answer
+            and _is_ollama_native
+            and "deepseek-r1" in str(model or "").lower()
+            and _relevant_tools is not None
+            and "bilingual_brain_receipts" in _relevant_tools
+            and "bilingual_brain_receipts" in _tool_names_sent
+            and _receipt_router_args is not None
+        )
+
+        if _deterministic_receipt_route:
+            _receipt_arguments = json.dumps(
+                _receipt_router_args,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+
+            async def _deterministic_receipt_stream():
+                yield "data: " + json.dumps({
+                    "type": "tool_calls",
+                    "calls": [{
+                        "id": (
+                            f"call_{round_num}"
+                            "_bilingual_brain_receipts_router"
+                        ),
+                        "name":
+                            "bilingual_brain_receipts",
+                        "arguments":
+                            _receipt_arguments,
+                        "deterministic_router":
+                            True,
+                    }],
+                }) + "\n\n"
+
+                yield "data: [DONE]\n\n"
+
+            _round_stream = (
+                _deterministic_receipt_stream()
+            )
+
+            logger.warning(
+                "[agent-router] deterministic "
+                "bilingual_brain_receipts route selected "
+                "for explicit local DeepSeek-R1 receipt request"
+            )
+
+        elif _deterministic_bilingual_route:
+            _bilingual_arguments = json.dumps(
+                {"goal": _bilingual_router_text},
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+
+            async def _deterministic_bilingual_stream():
+                yield "data: " + json.dumps({
+                    "type": "tool_calls",
+                    "calls": [{
+                        "id": f"call_{round_num}_bilingual_brain_router",
+                        "name": "bilingual_brain",
+                        "arguments": _bilingual_arguments,
+                        "deterministic_router": True,
+                    }],
+                }) + "\n\n"
+                yield "data: [DONE]\n\n"
+
+            _round_stream = _deterministic_bilingual_stream()
+
+            logger.warning(
+                "[agent-router] deterministic bilingual_brain route "
+                "selected for local DeepSeek-R1 substantive analysis"
+            )
+        else:
+            _round_stream = stream_llm_with_fallback(
+                _candidates,
+                messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                prompt_type=prompt_type if round_num == 1 else None,
+                tools=all_tool_schemas if all_tool_schemas else None,
+                tool_choice_none=_ody_doc_finetune_mode,
+                timeout=agent_stream_timeout,
+                session_id=session_id,
+                workload=workload,
+                fallback_statuses=fallback_statuses,
+                fallback_on_empty=fallback_on_empty,
+                candidate_request_factory=_candidate_request,
+                candidate_route_descriptors=_candidate_route_descriptors,
+            )
+
+        async for chunk in _round_stream:
             if not _round_first_event_logged:
                 _round_first_event_logged = True
                 logger.info(
@@ -5250,6 +5687,41 @@ async def stream_agent_loop(
             is_api_model=(_is_api_model and not guide_only),
             allow_fenced_for_api=_ody_doc_finetune_mode,
         )
+
+        # Strict local Ollama / DeepSeek compatibility.
+        # Recover only the dedicated bilingual_brain JSON envelope. Generic
+        # fenced JSON remains non-executable for API/native-tool models.
+        if (
+            not tool_blocks
+            and not native_tool_calls
+            and not guide_only
+            and not _force_answer
+            and _is_api_model
+            and _ollama_openai_compat
+            and _relevant_tools is not None
+            and "bilingual_brain" in _relevant_tools
+            and "bilingual_brain" in _tool_names_sent
+        ):
+            _compat_bilingual = _extract_bilingual_brain_text_json_call(
+                _normalized_doc_round,
+                _tool_names_sent,
+            )
+
+            if _compat_bilingual is not None:
+                _compat_block, _compat_call = _compat_bilingual
+                _compat_call["id"] = (
+                    f"call_{round_num}_bilingual_brain_text_json"
+                )
+
+                tool_blocks = [_compat_block]
+                native_tool_calls = [_compat_call]
+                converted_calls = [_compat_call]
+                used_native = True
+
+                logger.warning(
+                    "[agent] recovered bilingual_brain from strict "
+                    "local-Ollama JSON compatibility envelope"
+                )
         if _ody_doc_stream_create_mode and tool_blocks:
             create_idx = next(
                 (idx for idx, block in enumerate(tool_blocks) if block.tool_type == "create_document"),
@@ -5428,6 +5900,70 @@ async def stream_agent_loop(
         if _ody_qwen_finetune_model and not tool_blocks and cleaned_round:
             yield f'data: {json.dumps({"delta": cleaned_round})}\n\n'
 
+        # Deterministic explicit read_file recovery
+        #
+        # If the user literally asks:
+        #
+        #   Use read_file to read /some/path
+        #
+        # and the model emits no real tool call, construct the canonical
+        # read_file tool block directly from the USER'S path.
+        #
+        # This does NOT parse or execute arbitrary model prose.
+        if not tool_blocks and not guide_only:
+            _explicit_read_match = re.search(
+                r'\buse\s+read_file\s+to\s+read\s+'
+                r'(?:`([^`]+)`|"([^"]+)"|\'([^\']+)\'|(\S+))',
+                str(_last_user or ""),
+                re.IGNORECASE,
+            )
+
+            if _explicit_read_match:
+                # Do not repeat read_file if it already genuinely executed
+                # earlier in this same turn.
+                _read_file_already_executed = False
+
+                for _tool_event in tool_events:
+                    try:
+                        _event_name = str(
+                            _resolved_tool_event_name(_tool_event) or ""
+                        ).strip().lower()
+                    except Exception:
+                        _event_name = ""
+
+                    if _event_name == "read_file":
+                        _read_file_already_executed = True
+                        break
+
+                if not _read_file_already_executed:
+                    _read_path = next(
+                        (
+                            _group
+                            for _group in _explicit_read_match.groups()
+                            if _group
+                        ),
+                        "",
+                    ).strip()
+
+                    if _read_path:
+                        # Reuse the normal strict parser instead of constructing
+                        # execution objects by hand.
+                        _synthetic_read_blocks = parse_tool_blocks(
+                            "```read_file\n"
+                            + _read_path
+                            + "\n```"
+                        )
+
+                        if _synthetic_read_blocks:
+                            tool_blocks = _synthetic_read_blocks
+
+                            logger.warning(
+                                "[agent] explicit read_file produced no tool "
+                                "call; synthesized canonical read_file call "
+                                "for %r",
+                                _read_path,
+                            )
+
         if not tool_blocks:
             # ── Completion verifier (mechanism 3a) ────────────────────
             # The model is finishing. If this was an effectful agentic turn,
@@ -5480,6 +6016,410 @@ async def stream_agent_loop(
             # actual tool now") and loop again. Capped at
             # _MAX_INTENT_NUDGES so a model that genuinely cannot use the
             # tool doesn't pin us in a forever loop.
+            # Special write_file no-action supervisor
+            #
+            # Keep write_file on the dedicated path that has already been
+            # proven reliable with DeepSeek. Do not depend on mutable tool
+            # selection lists or generic tool-name resolution here.
+            _write_file_explicit_no_action = (
+                not guide_only
+                and not _successful_write_calls
+                and re.search(
+                    r"\buse\s+write_file\b",
+                    str(_last_user or ""),
+                    re.IGNORECASE,
+                ) is not None
+            )
+
+            if _write_file_explicit_no_action:
+                if _intent_nudge_count < _MAX_INTENT_NUDGES:
+                    _intent_nudge_count += 1
+
+                    logger.warning(
+                        "[agent] explicit write_file produced no tool call; "
+                        "forcing retry #%d on round %d",
+                        _intent_nudge_count,
+                        round_num,
+                    )
+
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "The user explicitly instructed you to use write_file, "
+                            "but your previous response did NOT emit a real write_file "
+                            "tool call. Nothing was written. "
+                            "DO NOT explain, promise, plan, or claim success. "
+                            "Your next action MUST be write_file. "
+                            "Use the exact path and content from the user's request. "
+                            "Emit the actual write_file tool call using the documented "
+                            "write_file format. Do NOT substitute bash, python, json, "
+                            "echo, cat, or another tool. "
+                            "Do not say the file exists until the write_file tool "
+                            "result confirms success."
+                        ),
+                    })
+
+                    yield (
+                        "data: "
+                        + json.dumps({
+                            "type": "agent_step",
+                            "round": round_num + 1,
+                        })
+                        + "\n\n"
+                    )
+                    continue
+
+                _guard_message = (
+                    "The agent stopped because the explicitly requested write_file "
+                    "tool repeatedly was not actually called."
+                )
+
+                logger.warning(
+                    "[agent] explicit write_file no-action guard exhausted "
+                    "on round %d after %d retries",
+                    round_num,
+                    _intent_nudge_count,
+                )
+
+                yield (
+                    "data: "
+                    + json.dumps({
+                        "type": "intent_nudge_exhausted",
+                        "reason": "write_file_without_action",
+                        "message": _guard_message,
+                        "round": round_num,
+                        "nudges": _intent_nudge_count,
+                        "tool": "write_file",
+                    })
+                    + "\n\n"
+                )
+                break
+
+            # Special read_file no-action supervisor
+            #
+            # DeepSeek frequently explains how it would read a file without
+            # actually emitting read_file. Keep this independent of mutable
+            # relevant_tools / selected_tools state.
+            _read_file_explicit_no_action = (
+                not guide_only
+                and re.search(
+                    r"\buse\s+read_file\b",
+                    str(_last_user or ""),
+                    re.IGNORECASE,
+                ) is not None
+            )
+
+            if _read_file_explicit_no_action:
+                _read_file_already_executed = False
+
+                for _tool_event in tool_events:
+                    try:
+                        _event_name = str(
+                            _resolved_tool_event_name(_tool_event) or ""
+                        ).strip().lower()
+                    except Exception:
+                        _event_name = ""
+
+                    if _event_name == "read_file":
+                        _read_file_already_executed = True
+                        break
+
+                if not _read_file_already_executed:
+                    if _intent_nudge_count < _MAX_INTENT_NUDGES:
+                        _intent_nudge_count += 1
+
+                        logger.warning(
+                            "[agent] explicit read_file produced no tool call; "
+                            "forcing retry #%d on round %d",
+                            _intent_nudge_count,
+                            round_num,
+                        )
+
+                        messages.append({
+                            "role": "system",
+                            "content": (
+                                "The user explicitly instructed you to use read_file, "
+                                "but your previous response did NOT emit a real read_file "
+                                "tool call. You have NOT read the file yet. "
+                                "DO NOT explain, summarize, guess, or claim its contents. "
+                                "Your next action MUST be read_file. "
+                                "Use the exact file path from the user's request. "
+                                "Emit the actual read_file tool call using the documented "
+                                "read_file format. Do NOT substitute bash, cat, python, "
+                                "or another tool. Only report the contents after the "
+                                "read_file tool result returns."
+                            ),
+                        })
+
+                        yield (
+                            "data: "
+                            + json.dumps({
+                                "type": "agent_step",
+                                "round": round_num + 1,
+                            })
+                            + "\n\n"
+                        )
+                        continue
+
+                    _guard_message = (
+                        "The agent stopped because the explicitly requested read_file "
+                        "tool repeatedly was not actually called."
+                    )
+
+                    logger.warning(
+                        "[agent] explicit read_file no-action guard exhausted "
+                        "on round %d after %d retries",
+                        round_num,
+                        _intent_nudge_count,
+                    )
+
+                    yield (
+                        "data: "
+                        + json.dumps({
+                            "type": "intent_nudge_exhausted",
+                            "reason": "read_file_without_action",
+                            "message": _guard_message,
+                            "round": round_num,
+                            "nudges": _intent_nudge_count,
+                            "tool": "read_file",
+                        })
+                        + "\n\n"
+                    )
+                    break
+
+            # Explicit named-tool no-action supervisor
+            #
+            # This is deliberately independent of the mutable relevant_tools
+            # list. If the user literally says:
+            #
+            #     Use write_file ...
+            #     Use read_file ...
+            #     Use grep ...
+            #     Use the web_search tool ...
+            #
+            # remember that exact requested tool. A prose-only response does
+            # NOT satisfy the request. The exact requested tool must appear in
+            # the real tool-event history before completion is accepted.
+            #
+            # Individual tool parsers remain strict. This code never executes
+            # prose, JSON, bash, etc. It only forces another model round.
+
+            _explicit_user_text = str(_last_user or "")
+
+            _explicit_tool_match = re.search(
+                r"\buse\s+(?:the\s+)?[`'\"]?"
+                r"([A-Za-z_][A-Za-z0-9_]*(?:__[A-Za-z0-9_]+)*)"
+                r"[`'\"]?(?:\s+tool\b)?",
+                _explicit_user_text,
+                re.IGNORECASE,
+            )
+
+            _explicit_requested_tool = (
+                _explicit_tool_match.group(1).strip()
+                if _explicit_tool_match
+                else ""
+            )
+
+            # Build a stable known-tool name map. TOOL_TAGS is the parser's
+            # canonical built-in tool registry and does not shrink from round
+            # to round the way relevant_tools can.
+            _known_tool_aliases = {}
+
+            _all_tool_tags = globals().get("TOOL_TAGS", ())
+
+            if isinstance(_all_tool_tags, dict):
+                _all_tool_names = list(_all_tool_tags.keys())
+            elif isinstance(_all_tool_tags, (list, tuple, set, frozenset)):
+                _all_tool_names = list(_all_tool_tags)
+            else:
+                _all_tool_names = []
+
+            # Also include whatever tool pools happen to be available as an
+            # additional source, but do not rely on them exclusively.
+            for _tool_pool_name in ("selected_tools", "relevant_tools"):
+                _tool_pool = locals().get(_tool_pool_name)
+
+                if not isinstance(_tool_pool, (list, tuple, set)):
+                    continue
+
+                for _entry in _tool_pool:
+                    _name = ""
+
+                    if isinstance(_entry, str):
+                        _name = _entry.strip()
+
+                    elif isinstance(_entry, dict):
+                        _name = str(
+                            _entry.get("name") or ""
+                        ).strip()
+
+                        if not _name:
+                            _fn = _entry.get("function")
+                            if isinstance(_fn, dict):
+                                _name = str(
+                                    _fn.get("name") or ""
+                                ).strip()
+
+                    else:
+                        _name = str(
+                            getattr(_entry, "name", "") or ""
+                        ).strip()
+
+                    if _name:
+                        _all_tool_names.append(_name)
+
+            for _name in _all_tool_names:
+                _name = str(_name or "").strip()
+
+                if not _name:
+                    continue
+
+                _canonical = _name.lower()
+
+                _known_tool_aliases[_canonical] = _name
+
+                # MCP names can also be explicitly requested by their short
+                # final component.
+                if "__" in _name:
+                    _short = _name.rsplit("__", 1)[-1].lower()
+                    _known_tool_aliases.setdefault(_short, _name)
+
+            _requested_canonical_tool = ""
+
+            if _explicit_requested_tool:
+                _requested_lookup = _explicit_requested_tool.lower()
+
+                _requested_canonical_tool = str(
+                    _known_tool_aliases.get(
+                        _requested_lookup,
+                        "",
+                    )
+                ).strip()
+
+            # Collect every real tool that actually ran earlier in this turn.
+            _executed_tool_aliases = set()
+
+            for _tool_event in tool_events:
+                try:
+                    _executed_name = str(
+                        _resolved_tool_event_name(_tool_event) or ""
+                    ).strip()
+                except Exception:
+                    _executed_name = ""
+
+                if not _executed_name:
+                    continue
+
+                _executed_tool_aliases.add(
+                    _executed_name.lower()
+                )
+
+                if "__" in _executed_name:
+                    _executed_tool_aliases.add(
+                        _executed_name.rsplit("__", 1)[-1].lower()
+                    )
+
+            _explicit_tool_was_executed = False
+
+            if _requested_canonical_tool:
+                _requested_aliases = {
+                    _requested_canonical_tool.lower()
+                }
+
+                if "__" in _requested_canonical_tool:
+                    _requested_aliases.add(
+                        _requested_canonical_tool.rsplit(
+                            "__",
+                            1,
+                        )[-1].lower()
+                    )
+
+                _explicit_tool_was_executed = not (
+                    _requested_aliases.isdisjoint(
+                        _executed_tool_aliases
+                    )
+                )
+
+                # Preserve the already-proven write_file success tracking as
+                # an additional reliable signal.
+                if (
+                    _requested_canonical_tool.lower() == "write_file"
+                    and _successful_write_calls
+                ):
+                    _explicit_tool_was_executed = True
+
+            _explicit_named_tool_no_action = (
+                not guide_only
+                and bool(_requested_canonical_tool)
+                and _requested_canonical_tool.lower() not in {"write_file", "read_file"}
+                and not _explicit_tool_was_executed
+            )
+
+            if _explicit_named_tool_no_action:
+                if _intent_nudge_count < _MAX_INTENT_NUDGES:
+                    _intent_nudge_count += 1
+
+                    logger.warning(
+                        "[agent] explicit named tool %r produced no actual "
+                        "call; forcing retry #%d on round %d",
+                        _requested_canonical_tool,
+                        _intent_nudge_count,
+                        round_num,
+                    )
+
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "The user explicitly instructed you to use the "
+                            f"`{_requested_canonical_tool}` tool, but no real "
+                            f"`{_requested_canonical_tool}` tool call occurred. "
+                            "Your previous prose does NOT mean the action was "
+                            "performed. Do not claim success. "
+                            f"Call `{_requested_canonical_tool}` NOW using its "
+                            "documented tool-call format. Do not substitute "
+                            "bash, python, or another tool. Only report success "
+                            "after the requested tool actually returns a result."
+                        ),
+                    })
+
+                    yield (
+                        "data: "
+                        + json.dumps({
+                            "type": "agent_step",
+                            "round": round_num + 1,
+                        })
+                        + "\n\n"
+                    )
+                    continue
+
+                _guard_message = (
+                    "The agent stopped because the explicitly requested "
+                    f"`{_requested_canonical_tool}` tool repeatedly was not "
+                    "actually called."
+                )
+
+                logger.warning(
+                    "[agent] explicit named-tool guard exhausted on round %d "
+                    "after %d retries: %s",
+                    round_num,
+                    _intent_nudge_count,
+                    _requested_canonical_tool,
+                )
+
+                yield (
+                    "data: "
+                    + json.dumps({
+                        "type": "intent_nudge_exhausted",
+                        "reason": "explicit_named_tool_without_action",
+                        "message": _guard_message,
+                        "round": round_num,
+                        "nudges": _intent_nudge_count,
+                        "tool": _requested_canonical_tool,
+                    })
+                    + "\n\n"
+                )
+                break
+
             _intent_text = _strip_think_blocks(cleaned_round).strip()
             _intent_match = _INTENT_RE.search(_intent_text) if _intent_text else None
             # Only nudge when the round REALLY looks like an unfinished
@@ -5547,6 +6487,63 @@ async def stream_agent_loop(
                 )
                 break
             break  # no tools — done
+
+        # DeepSeek/local-model compatibility:
+        # never execute the exact same successful write_file twice in one turn.
+        _duplicate_write_keys = {
+            (b.tool_type, (b.content or "").strip())
+            for b in tool_blocks
+            if b.tool_type == "write_file"
+            and (
+                b.tool_type,
+                (b.content or "").strip(),
+            ) in _successful_write_calls
+        }
+
+        if _duplicate_write_keys:
+            logger.info(
+                "[agent] suppressing %d duplicate successful write_file call(s)",
+                len(_duplicate_write_keys),
+            )
+
+            tool_blocks = [
+                b
+                for b in tool_blocks
+                if (
+                    b.tool_type,
+                    (b.content or "").strip(),
+                ) not in _duplicate_write_keys
+            ]
+
+            # If the duplicate was the only requested action, do not execute it
+            # again. Preserve any confirmation prose the model already wrote.
+            if not tool_blocks:
+                _already_done_text = _strip_think_blocks(cleaned_round).strip()
+
+                if _already_done_text:
+                    logger.info(
+                        "[agent] duplicate successful write_file suppressed; "
+                        "ending turn with existing confirmation"
+                    )
+                    break
+
+                # No usable prose: give the model one tool-free chance to
+                # acknowledge the already-completed write.
+                _force_answer = True
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "The requested write_file action already succeeded earlier "
+                        "in this turn. Do NOT call write_file again. Reply with one "
+                        "short confirmation that the file was created."
+                    ),
+                })
+                yield "data: " + json.dumps({
+                    "type": "agent_step",
+                    "round": round_num + 1,
+                }) + "\n\n"
+                continue
+
 
         # ── Loop-breaker (Terminus-style stall detector) ──────────────
         # Stall detector for repeated no-progress tool loops.
@@ -5905,6 +6902,10 @@ async def stream_agent_loop(
             # doc_update first can enter diff mode and make the later stream
             # discard/save the stale pre-update document.
             if tool_result_is_successful(result):
+                if block.tool_type == "write_file":
+                    _successful_write_calls.add(
+                        (block.tool_type, (block.content or "").strip())
+                    )
                 for doc_event in _document_stream_events(block):
                     yield f'data: {json.dumps(doc_event)}\n\n'
 

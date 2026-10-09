@@ -620,6 +620,33 @@ def _normalize_ollama_url(url: str) -> str:
     return base.rstrip("/") + "/chat"
 
 
+def _ollama_use_mmap_override(url: str) -> Optional[bool]:
+    """Return the mmap override for a local Ollama runtime.
+
+    REVA's Windows ROCm runtime stalls while loading this model through
+    Ollama's mmap path, but succeeds with native ``options.use_mmap=false``.
+    Limit the workaround to loopback/Docker-host Ollama so remote Ollama
+    servers retain their own default mmap policy.
+    """
+    try:
+        parsed = urlparse((url or "").strip())
+    except Exception:
+        return None
+
+    host = (parsed.hostname or "").strip().lower()
+
+    if host in {
+        "localhost",
+        "127.0.0.1",
+        "0.0.0.0",
+        "::1",
+        "host.docker.internal",
+    }:
+        return False
+
+    return None
+
+
 def _normalize_openai_chat_url(url: str) -> str:
     """Ensure an OpenAI-compatible base URL points at /chat/completions."""
     base = (url or "").strip().rstrip("/")
@@ -736,6 +763,7 @@ def _build_ollama_payload(
     stream: bool = False,
     tools: Optional[List[Dict]] = None,
     num_ctx: Optional[int] = None,
+    use_mmap: Optional[bool] = None,
 ) -> Dict:
     """Build the JSON payload for Ollama's /api/chat endpoint.
 
@@ -760,10 +788,18 @@ def _build_ollama_payload(
         options["num_predict"] = max_tokens
     if num_ctx is not None and num_ctx > 0 and num_ctx != DEFAULT_CONTEXT:
         options["num_ctx"] = num_ctx
+    if use_mmap is not None:
+        options["use_mmap"] = bool(use_mmap)
     if options:
         payload["options"] = options
     if tools:
         payload["tools"] = _alias_harmony_tools(tools, model)
+        # Thinking-capable local models such as DeepSeek R1 can consume the
+        # entire generation budget in reasoning before producing a tool call.
+        # Suppress thinking only for native Ollama tool rounds; ordinary
+        # non-tool chat retains the model's normal thinking behavior.
+        if _supports_thinking(model):
+            payload["think"] = False
     return payload
 
 
@@ -2014,7 +2050,9 @@ def llm_call(url: str, model: str, messages: List[Dict], temperature: float = LL
         target_url = _normalize_ollama_url(url)
         payload = _build_ollama_payload(
             model, messages_copy, temperature, max_tokens,
-            stream=False, num_ctx=get_context_length(url, model),
+            stream=False,
+            num_ctx=get_context_length(url, model),
+            use_mmap=_ollama_use_mmap_override(url),
         )
     else:
         target_url = _normalize_openai_chat_url(url)
@@ -2374,7 +2412,9 @@ async def llm_call_async(
             h.update(headers)
         payload = _build_ollama_payload(
             model, messages_copy, temperature, max_tokens,
-            stream=False, num_ctx=get_context_length(url, model),
+            stream=False,
+            num_ctx=get_context_length(url, model),
+            use_mmap=_ollama_use_mmap_override(url),
         )
     else:
         target_url = _normalize_openai_chat_url(url)
@@ -2620,7 +2660,10 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
             h.update(headers)
         payload = _build_ollama_payload(
             model, messages_copy, temperature, max_tokens,
-            stream=True, tools=tools, num_ctx=get_context_length(url, model),
+            stream=True,
+            tools=tools,
+            num_ctx=get_context_length(url, model),
+            use_mmap=_ollama_use_mmap_override(url),
         )
     elif provider == "chatgpt-subscription":
         target_url = _normalize_chatgpt_subscription_url(url)
