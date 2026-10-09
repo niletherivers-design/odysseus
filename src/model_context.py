@@ -144,6 +144,7 @@ KNOWN_CONTEXT_WINDOWS = {
     'deepseek-chat': 64000,
     'deepseek-coder': 64000,
     'deepseek-reasoner': 64000,
+    'deepseek-r1:14b-32k': 32768,
     'deepseek-r1': 64000,
     'deepseek-v3': 64000,
     'deepseek-v2': 64000,

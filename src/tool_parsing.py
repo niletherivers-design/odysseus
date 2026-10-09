@@ -10,6 +10,7 @@ import bisect
 import json
 import logging
 import re
+import shlex
 from typing import List, Optional, Tuple
 
 from src.agent_tools import ToolBlock, TOOL_TAGS
@@ -529,6 +530,178 @@ def _parse_misfenced_read_file_lookup(content: str, *, allow_shell_style: bool =
         return None
     return ToolBlock("read_file", path)
 
+
+
+def _parse_misfenced_write_file_lookup(
+    content: str,
+    *,
+    allow_shell_style: bool = False,
+) -> Optional[ToolBlock]:
+    """Recover a single write_file call wrapped in a python/bash fence.
+
+    This intentionally accepts only literal strings and exactly one write_file
+    operation. Arbitrary bash/python remains bash/python and continues through
+    the normal security policy.
+    """
+    stripped = content.strip()
+    if not stripped:
+        return None
+
+    # Python-like forms:
+    #
+    #   write_file("/path/file.txt", "hello")
+    #   write_file(path="/path/file.txt", content="hello")
+    #   write_file(file_path="/path/file.txt", content="hello")
+    try:
+        module = ast.parse(stripped, mode="exec")
+    except SyntaxError:
+        module = None
+
+    if module and len(module.body) == 1 and isinstance(module.body[0], ast.Expr):
+        call = module.body[0].value
+
+        if (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id.lower() == "write_file"
+        ):
+            if len(call.args) > 2:
+                return None
+
+            parsed = {}
+
+            if len(call.args) >= 1:
+                try:
+                    value = ast.literal_eval(call.args[0])
+                except (ValueError, SyntaxError, TypeError):
+                    return None
+                if not isinstance(value, str):
+                    return None
+                parsed["path"] = value.strip()
+
+            if len(call.args) >= 2:
+                try:
+                    value = ast.literal_eval(call.args[1])
+                except (ValueError, SyntaxError, TypeError):
+                    return None
+                if not isinstance(value, str):
+                    return None
+                parsed["content"] = value
+
+            allowed = {"path", "file", "file_path", "content"}
+
+            for keyword in call.keywords:
+                if keyword.arg not in allowed:
+                    return None
+
+                key = (
+                    "path"
+                    if keyword.arg in ("path", "file", "file_path")
+                    else "content"
+                )
+
+                # Reject duplicate positional + keyword values.
+                if key in parsed:
+                    return None
+
+                try:
+                    value = ast.literal_eval(keyword.value)
+                except (ValueError, SyntaxError, TypeError):
+                    return None
+
+                if not isinstance(value, str):
+                    return None
+
+                parsed[key] = value.strip() if key == "path" else value
+
+            path = parsed.get("path")
+            file_content = parsed.get("content")
+
+            if path and file_content is not None:
+                return ToolBlock(
+                    "write_file",
+                    path + "\n" + file_content,
+                )
+
+            return None
+
+    if not allow_shell_style:
+        return None
+
+    # DeepSeek multiline --path/--content write_file recovery
+    #
+    # Accept ONLY:
+    #
+    #   write_file
+    #   --path /app/workspace/test.txt
+    #   --content "HELLO"
+    #
+    # or --file_path as an alias for --path. No other flags or commands
+    # are converted; arbitrary bash remains subject to normal bash policy.
+    try:
+        _option_parts = shlex.split(stripped, posix=True)
+    except ValueError:
+        _option_parts = []
+
+    if _option_parts and _option_parts[0].lower() == "write_file":
+        if len(_option_parts) == 5:
+            _wf_opts = {}
+            _valid = True
+
+            for _i in (1, 3):
+                _flag = _option_parts[_i].lower()
+                _value = _option_parts[_i + 1]
+
+                if _flag not in ("--path", "--file_path", "--content"):
+                    _valid = False
+                    break
+
+                _semantic = "path" if _flag in ("--path", "--file_path") else "content"
+
+                if _semantic in _wf_opts:
+                    _valid = False
+                    break
+
+                _wf_opts[_semantic] = _value
+
+            if (
+                _valid
+                and isinstance(_wf_opts.get("path"), str)
+                and _wf_opts["path"].strip()
+                and isinstance(_wf_opts.get("content"), str)
+            ):
+                return ToolBlock(
+                    "write_file",
+                    _wf_opts["path"].strip() + "\n" + _wf_opts["content"],
+                )
+
+    # DeepSeek also emits:
+    #
+    #   write_file /app/workspace/test.txt "HELLO FROM ODYSSEUS"
+    #
+    # Only convert a single three-token pseudo-command. Anything more
+    # complicated stays bash and remains subject to the normal bash policy.
+    try:
+        parts = shlex.split(stripped, posix=True)
+    except ValueError:
+        return None
+
+    if len(parts) != 3:
+        return None
+
+    if parts[0].lower() != "write_file":
+        return None
+
+    path = parts[1].strip()
+    file_content = parts[2]
+
+    if not path:
+        return None
+
+    return ToolBlock(
+        "write_file",
+        path + "\n" + file_content,
+    )
 
 def _coerce_raw_web_query(value) -> Optional[str]:
     if isinstance(value, str) and value.strip():
@@ -1343,11 +1516,125 @@ def parse_tool_blocks(text: str, skip_fenced: bool = False) -> List[ToolBlock]:
                 continue
             if tag in ("python", "bash"):
                 block = (_parse_misfenced_web_lookup(content)
-                         or _parse_misfenced_read_file_lookup(content, allow_shell_style=(tag == "bash")))
+                         or _parse_misfenced_read_file_lookup(content, allow_shell_style=(tag == "bash"))
+                         or _parse_misfenced_write_file_lookup(content, allow_shell_style=(tag == "bash")))
                 if block:
                     blocks.append(block)
                     continue
             blocks.append(ToolBlock(tag, content))
+
+    # DeepSeek text-fence write_file recovery
+    #
+    # Some local models emit a pseudo-tool call inside a generic text fence:
+    #
+    # ```text
+    # Command: write_file /app/workspace/test.txt "HELLO"
+    # File written successfully...
+    # ```
+    #
+    # Recover ONLY the literal write_file command. Arbitrary text remains text.
+    if not blocks and not skip_fenced:
+        _text_fence_re = re.compile(
+            r"```(?:text|txt|plaintext)[ \t]*\r?\n(?P<body>.*?)```",
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        for _text_match in _text_fence_re.finditer(text):
+            _text_body = _text_match.group("body")
+
+            for _text_line in _text_body.splitlines():
+                _candidate = _text_line.strip()
+
+                if not _candidate:
+                    continue
+
+                if _candidate.lower().startswith("command:"):
+                    _candidate = _candidate.split(":", 1)[1].strip()
+
+                if not _candidate.lower().startswith("write_file "):
+                    continue
+
+                _recovered = _parse_misfenced_write_file_lookup(
+                    _candidate,
+                    allow_shell_style=True,
+                )
+
+                if _recovered is not None:
+                    blocks.append(_recovered)
+                    break
+
+            if blocks:
+                break
+
+    # DeepSeek JSON-fence write_file recovery
+    #
+    # Recover ONLY this exact local-model shape:
+    #
+    # ```json
+    # {
+    #   "tool": "write_file",
+    #   "args": {
+    #     "path": "/app/workspace/file.txt",
+    #     "content": "hello"
+    #   }
+    # }
+    # ```
+    #
+    # Arbitrary JSON remains inert.
+    if not blocks and not skip_fenced:
+        _json_write_fence_re = re.compile(
+            r"```json[ \t]*\r?\n(?P<body>.*?)```",
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        for _json_match in _json_write_fence_re.finditer(text):
+            _json_body = _json_match.group("body").strip()
+
+            try:
+                _payload = json.loads(_json_body)
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            if not isinstance(_payload, dict):
+                continue
+
+            # Keep the accepted outer shape deliberately narrow.
+            if set(_payload.keys()) - {"tool", "args"}:
+                continue
+
+            _tool_name = _payload.get("tool")
+            _args = _payload.get("args")
+
+            if not isinstance(_tool_name, str):
+                continue
+
+            if _tool_name.strip().lower() != "write_file":
+                continue
+
+            if not isinstance(_args, dict):
+                continue
+
+            # Only path/file_path/content are accepted for this recovery path.
+            if set(_args.keys()) - {"path", "file_path", "content"}:
+                continue
+
+            # Accept DeepSeek's common file_path alias.
+            _path = _args.get("path") or _args.get("file_path")
+            _content = _args.get("content")
+
+            if not isinstance(_path, str) or not _path.strip():
+                continue
+
+            if not isinstance(_content, str):
+                continue
+
+            blocks.append(
+                ToolBlock(
+                    "write_file",
+                    _path.strip() + "\n" + _content,
+                )
+            )
+            break
 
     # Pattern 2: [TOOL_CALL] blocks (only if no fenced blocks found)
     # _iter_delimited scans the delimiter-bounded formats forward-only so
