@@ -2111,9 +2111,15 @@ import { loadPanel } from './panels.js';
           if (m) errText = m[1].replace(/\\"/g, '"');
           else if (errBody.length < 200) errText = errBody;
         } catch {}
-        // Auto-switch to chat mode for tool-related errors
-        if (errText.includes('tool') || errText.includes('auto')) {
-          errText = 'This model doesn\'t support agent tools — switched to Chat mode. Try again.';
+        // Auto-switch only when the backend explicitly reports that
+        // tool/function calling itself is unsupported. Do NOT treat every
+        // error containing "tool" or "auto" as a model capability failure.
+        const _unsupportedToolError =
+          /(?:does not|doesn't|cannot|can't)\s+support.*(?:tool|function)/i.test(errText) ||
+          /(?:tool|function)(?:[_ -]?(?:call|calling|choice))?.*(?:unsupported|not supported)/i.test(errText);
+
+        if (_unsupportedToolError) {
+          errText = 'This model does not support the required native tool/function calling — switched to Chat mode. Try again.';
           const _ab = document.getElementById('mode-agent-btn');
           const _cb = document.getElementById('mode-chat-btn');
           if (_ab && _cb) {
