@@ -179,7 +179,7 @@ def validate_message(message: str) -> str:
     if len(message) == 0:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-    if len(message) > 50000:
+    if len(message) > 500000:
         raise HTTPException(status_code=400, detail="Message exceeds maximum length")
 
     return message
