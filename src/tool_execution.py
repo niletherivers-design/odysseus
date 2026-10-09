@@ -1380,7 +1380,37 @@ def format_tool_result(description: str, result: Dict) -> str:
         else:
             parts.append(result["response"])
     elif "results" in result:
-        parts.append(result["results"])
+        # Some tools, including bilingual_brain, return structured result
+        # collections rather than a pre-rendered string. Never place a list or
+        # dict directly into `parts`: the final newline join requires strings.
+        _structured_results = result["results"]
+
+        if isinstance(_structured_results, str):
+            parts.append(_structured_results)
+        else:
+            try:
+                _rendered_results = json.dumps(
+                    _structured_results,
+                    indent=2,
+                    default=str,
+                    ensure_ascii=False,
+                )
+            except (TypeError, ValueError):
+                _rendered_results = str(_structured_results)
+
+            # Keep tool feedback useful without allowing a very large Brain
+            # result to consume the entire follow-up model context.
+            if len(_rendered_results) > 16000:
+                _rendered_results = (
+                    _rendered_results[:16000]
+                    + f"\n... (truncated, {len(_rendered_results)} chars total)"
+                )
+
+            parts.append(
+                "**results:**\n```json\n"
+                + _rendered_results
+                + "\n```"
+            )
     elif "session_id" in result and "name" in result:
         parts.append(f"Session created: **{result['name']}** (id: `{result['session_id']}`, model: {result.get('model', 'unknown')})")
     elif "success" in result:
