@@ -2295,6 +2295,117 @@ def _normalize_ody_qwen_text_artifacts(text: str) -> str:
     return fixed
 
 
+def _bilingual_brain_receipt_list_terminal_summary(
+    result: dict[str, Any],
+) -> str:
+    """Render only bounded metadata from action=list receipt results.
+
+    Receipt contents remain workspace-untrusted and are never copied into this
+    deterministic terminal response.  latest/read/verify intentionally return
+    an empty string here so their existing semantics are preserved.
+    """
+
+    if not isinstance(result, dict):
+        return ""
+
+    if result.get("error"):
+        return ""
+
+    if result.get("action") != "list":
+        return ""
+
+    if result.get("production_authority") != "OFF":
+        return ""
+
+    if result.get("semantic_claims_verified") is not False:
+        return ""
+
+    total = result.get("total_receipts")
+    returned = result.get("returned")
+    entries = result.get("results")
+
+    if (
+        isinstance(total, bool)
+        or not isinstance(total, int)
+        or total < 0
+    ):
+        return ""
+
+    if (
+        isinstance(returned, bool)
+        or not isinstance(returned, int)
+        or returned < 0
+        or returned > 50
+        or returned > total
+    ):
+        return ""
+
+    if not isinstance(entries, list):
+        return ""
+
+    if len(entries) != returned:
+        return ""
+
+    receipt_name_re = re.compile(
+        r"^\d{8}T\d{6}\.\d{6}Z-[0-9a-f]{16}\.json$"
+    )
+
+    safe_entries: list[tuple[str, int]] = []
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return ""
+
+        receipt = entry.get("receipt")
+        size_bytes = entry.get("size_bytes")
+
+        if (
+            not isinstance(receipt, str)
+            or receipt_name_re.fullmatch(receipt) is None
+        ):
+            return ""
+
+        if (
+            isinstance(size_bytes, bool)
+            or not isinstance(size_bytes, int)
+            or size_bytes < 0
+        ):
+            return ""
+
+        safe_entries.append(
+            (
+                receipt,
+                size_bytes,
+            )
+        )
+
+    lines = [
+        (
+            "Bilingual Brain receipts: "
+            f"{total} total "
+            f"(showing {returned})"
+        ),
+    ]
+
+    if not safe_entries:
+        lines.append("- None")
+    else:
+        for receipt, size_bytes in safe_entries:
+            lines.append(
+                f"- {receipt} — {size_bytes} bytes"
+            )
+
+    lines.extend([
+        "",
+        (
+            "Production authority: OFF. "
+            "Semantic claims are not automatically verified."
+        ),
+    ])
+
+    return "\n".join(lines)
+
+
 def _reva_health_terminal_summary(
     result: dict[str, Any],
 ) -> str:
@@ -6884,6 +6995,7 @@ async def stream_agent_loop(
         tool_result_texts = []  # plain text for native tool role messages
         tool_result_records = []  # aligned structured provenance for next round
         _reva_health_terminal_completed = False
+        _receipt_list_terminal_completed = False
         budget_hit = False
         for i, block in enumerate(tool_blocks):
             # --- Tool budget check ---
@@ -7347,6 +7459,47 @@ async def stream_agent_loop(
 
                     _reva_health_terminal_completed = True
 
+            # Receipt contents are workspace-untrusted.  Only action=list may
+            # terminate deterministically, and only after projecting the
+            # canonical filename/size metadata through a strict allowlist.
+            # latest/read/verify deliberately continue through existing paths.
+            if (
+                block.tool_type == "bilingual_brain_receipts"
+                and not result.get("error")
+            ):
+                _receipt_list_summary = (
+                    _bilingual_brain_receipt_list_terminal_summary(
+                        result
+                    )
+                )
+
+                if _receipt_list_summary:
+                    _clean_current = (
+                        strip_tool_blocks(
+                            full_response
+                        ).strip()
+                    )
+
+                    full_response = (
+                        _receipt_list_summary
+                    )
+
+                    if (
+                        _receipt_list_summary
+                        not in _clean_current
+                    ):
+                        yield (
+                            "data: "
+                            + json.dumps({
+                                "delta":
+                                    _receipt_list_summary,
+                            })
+                            + "\n\n"
+                        )
+
+                    _receipt_list_terminal_completed = True
+
+
             if result.get("image_url"):
                 generated_image_data = {"type": "generated_image", "url": result.get("image_url")}
                 for k in ("image_url", "image_id", "image_prompt", "image_model", "image_size", "image_quality"):
@@ -7580,6 +7733,13 @@ async def stream_agent_loop(
 
         if (_ody_notes_finetune_mode or _ody_qwen_finetune_model) and _ody_notes_tool_completed:
             logger.info("[agent] odysseus completed from deterministic tool output")
+            break
+
+        if _receipt_list_terminal_completed:
+            logger.info(
+                "[agent] Bilingual Brain receipt list completed from "
+                "safe deterministic metadata; skipping second model round"
+            )
             break
 
         if _reva_health_terminal_completed:
