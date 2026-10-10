@@ -1568,6 +1568,57 @@ def _bilingual_brain_receipt_args_from_text(
         )
     )
 
+    # V5: accept an expected digest only when the user supplies one complete,
+    # explicitly SHA-256-labelled 64-hex value.  The value is bounded data,
+    # never free-form text.  Multiple candidates fail closed.
+    expected_sha256_matches = re.findall(
+        r"\bsha-?256\b"
+        r"\s*(?:(?:is|equals?)\s+|[:=]\s*)?"
+        r"([0-9a-fA-F]{64})(?![0-9a-fA-F])",
+        raw,
+        flags=re.IGNORECASE,
+    )
+
+    # More than one SHA-256 label is ambiguous even if only one of the
+    # following values happens to be a valid 64-hex digest.  Never select
+    # one candidate while silently ignoring another malformed candidate.
+    expected_sha256_labels = re.findall(
+        r"\bsha-?256\b",
+        raw,
+        flags=re.IGNORECASE,
+    )
+
+    expected_sha256_context = bool(
+        re.search(
+            r"\b(?:against|expected|expecting|compare|comparison)\b",
+            q,
+        )
+        and re.search(
+            r"\bsha-?256\b",
+            q,
+        )
+    )
+
+    if len(expected_sha256_labels) > 1:
+        return None
+
+    if len(expected_sha256_matches) > 1:
+        return None
+
+    # If the user explicitly asks for an expected-SHA comparison, never
+    # silently downgrade malformed/missing digest input to ordinary verify.
+    if (
+        expected_sha256_context
+        and len(expected_sha256_matches) != 1
+    ):
+        return None
+
+    expected_sha256 = (
+        expected_sha256_matches[0].lower()
+        if expected_sha256_matches
+        else None
+    )
+
     # Merely discussing a receipt, receipt system, or evidence-receipt
     # integration is not a request to read persisted receipt data.
     #
@@ -1597,12 +1648,25 @@ def _bilingual_brain_receipt_args_from_text(
     ):
         return None
 
+    # Expected-hash comparison is meaningful only for one concrete,
+    # canonical receipt.  Never discard it by routing to latest/list.
+    if (
+        expected_sha256 is not None
+        and receipt_name is None
+    ):
+        return None
+
     if receipt_name is not None:
         if verify_intent:
-            return {
+            args: Dict[str, object] = {
                 "action": "verify",
                 "receipt": receipt_name,
             }
+
+            if expected_sha256 is not None:
+                args["expected_sha256"] = expected_sha256
+
+            return args
 
         return {
             "action": "read",

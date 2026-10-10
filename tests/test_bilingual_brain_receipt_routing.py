@@ -999,3 +999,244 @@ def test_v3_list_terminalization_remains_independent() -> None:
         )
         == ""
     )
+
+
+# ---------------------------------------------------------------------------
+# REVA Orchestration v5 — deterministic expected-SHA256 receipt routing
+# ---------------------------------------------------------------------------
+
+_V5_RECEIPT = (
+    "20261009T043350.153555Z-"
+    "3d2b1e1fc81ad28d.json"
+)
+
+_V5_EXPECTED_SHA = (
+    "3d2b1e1fc81ad28d"
+    "733b5be2915c4b7d"
+    "5077f27834467146"
+    "42c0222b45bbb94e"
+)
+
+
+def test_v5_receipt_router_supplies_expected_sha256() -> None:
+    text = (
+        "verify Bilingual Brain receipt "
+        f"{_V5_RECEIPT} "
+        "against SHA-256 "
+        f"{_V5_EXPECTED_SHA}"
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_args_from_text(
+            text
+        )
+        == {
+            "action":
+                "verify",
+            "receipt":
+                _V5_RECEIPT,
+            "expected_sha256":
+                _V5_EXPECTED_SHA,
+        }
+    )
+
+
+def test_v5_receipt_router_normalizes_expected_sha256() -> None:
+    text = (
+        "validate Bilingual Brain receipt "
+        f"{_V5_RECEIPT} "
+        "against SHA256: "
+        f"{_V5_EXPECTED_SHA.upper()}"
+    )
+
+    result = (
+        agent_loop
+        ._bilingual_brain_receipt_args_from_text(
+            text
+        )
+    )
+
+    assert result == {
+        "action":
+            "verify",
+        "receipt":
+            _V5_RECEIPT,
+        "expected_sha256":
+            _V5_EXPECTED_SHA,
+    }
+
+
+def test_v5_receipt_router_preserves_plain_verify() -> None:
+    text = (
+        "verify Bilingual Brain receipt "
+        f"{_V5_RECEIPT}"
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_args_from_text(
+            text
+        )
+        == {
+            "action":
+                "verify",
+            "receipt":
+                _V5_RECEIPT,
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "digest",
+    (
+        "a" * 63,
+        "a" * 65,
+        "not-a-sha256-digest",
+    ),
+)
+def test_v5_receipt_router_rejects_malformed_expected_sha256(
+    digest: str,
+) -> None:
+    text = (
+        "verify Bilingual Brain receipt "
+        f"{_V5_RECEIPT} "
+        "against SHA-256 "
+        f"{digest}"
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_args_from_text(
+            text
+        )
+        is None
+    )
+
+
+def test_v5_receipt_router_rejects_multiple_sha256_candidates() -> None:
+    text = (
+        "verify Bilingual Brain receipt "
+        f"{_V5_RECEIPT} "
+        "against SHA-256 "
+        f"{'a' * 64} "
+        "and SHA-256 "
+        f"{'b' * 64}"
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_args_from_text(
+            text
+        )
+        is None
+    )
+
+
+def test_v5_expected_sha256_requires_named_receipt() -> None:
+    text = (
+        "verify my latest Bilingual Brain receipt "
+        "against SHA-256 "
+        f"{_V5_EXPECTED_SHA}"
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_args_from_text(
+            text
+        )
+        is None
+    )
+
+
+def test_v5_expected_sha256_never_changes_read_or_latest_terminalization() -> None:
+    source = inspect.getsource(
+        agent_loop
+    )
+
+    assert (
+        "_receipt_read_terminal_summary"
+        not in source
+    )
+
+    assert (
+        "_receipt_latest_terminal_summary"
+        not in source
+    )
+
+    helper = inspect.getsource(
+        agent_loop
+        ._bilingual_brain_receipt_verify_terminal_summary
+    )
+
+    assert (
+        '"expected_sha256"'
+        in helper
+    )
+
+    assert (
+        "- Expected SHA-256: "
+        in helper
+    )
+
+
+def test_v5_router_expected_sha256_is_bounded_projection_only() -> None:
+    helper = inspect.getsource(
+        agent_loop
+        ._bilingual_brain_receipt_args_from_text
+    )
+
+    assert (
+        "expected_sha256_matches"
+        in helper
+    )
+
+    assert (
+        r"([0-9a-fA-F]{64})"
+        in helper
+    )
+
+    assert (
+        "len(expected_sha256_matches) > 1"
+        in helper
+    )
+
+    assert (
+        'args["expected_sha256"] = expected_sha256'
+        in helper
+    )
+
+
+def test_v5_receipt_router_rejects_valid_plus_malformed_sha256_candidate() -> None:
+    text = (
+        "verify Bilingual Brain receipt "
+        f"{_V5_RECEIPT} "
+        "against SHA-256 "
+        f"{_V5_EXPECTED_SHA} "
+        "and SHA-256 not-a-valid-digest"
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_args_from_text(
+            text
+        )
+        is None
+    )
+
+
+def test_v5_router_counts_all_sha256_labels_before_selection() -> None:
+    helper = inspect.getsource(
+        agent_loop
+        ._bilingual_brain_receipt_args_from_text
+    )
+
+    assert (
+        "expected_sha256_labels"
+        in helper
+    )
+
+    assert (
+        "len(expected_sha256_labels) > 1"
+        in helper
+    )
