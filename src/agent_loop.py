@@ -2359,6 +2359,131 @@ def _normalize_ody_qwen_text_artifacts(text: str) -> str:
     return fixed
 
 
+def _bilingual_brain_receipt_read_allowlist_summary(
+    result: dict[str, Any],
+) -> str:
+    """Render a strict fixed-field projection for action=read.
+
+    The persisted receipt body remains workspace-untrusted.
+
+    This helper intentionally does not render request, response, schema,
+    policy body data, content, payload, detail, document, or workspace
+    paths.  It emits only validated top-level receipt metadata plus fixed
+    explanatory text.
+    """
+
+    if not isinstance(result, dict):
+        return ""
+
+    if result.get("error"):
+        return ""
+
+    if result.get("action") != "read":
+        return ""
+
+    if result.get("production_authority") != "OFF":
+        return ""
+
+    if result.get("semantic_claims_verified") is not False:
+        return ""
+
+    results = result.get("results")
+
+    if (
+        not isinstance(results, list)
+        or len(results) != 1
+        or not isinstance(results[0], dict)
+    ):
+        return ""
+
+    item = results[0]
+
+    # Prove that an actual receipt document was loaded while deliberately
+    # refusing to inspect or render the values of its untrusted body fields.
+    required_body_keys = {
+        "created_at",
+        "schema",
+        "policy",
+        "request",
+        "response",
+    }
+
+    if not required_body_keys.issubset(
+        item.keys()
+    ):
+        return ""
+
+    receipt = result.get("receipt")
+
+    if not isinstance(receipt, str):
+        return ""
+
+    receipt_match = re.fullmatch(
+        r"\d{8}T\d{6}\.\d{6}Z-"
+        r"(?P<prefix>[0-9a-f]{16})"
+        r"\.json",
+        receipt,
+    )
+
+    if receipt_match is None:
+        return ""
+
+    receipt_sha256 = result.get(
+        "receipt_sha256"
+    )
+
+    if (
+        not isinstance(receipt_sha256, str)
+        or re.fullmatch(
+            r"[0-9a-f]{64}",
+            receipt_sha256,
+        )
+        is None
+    ):
+        return ""
+
+    filename_prefix_valid = result.get(
+        "filename_sha256_prefix_valid"
+    )
+
+    receipt_policy_valid = result.get(
+        "receipt_policy_valid"
+    )
+
+    if type(filename_prefix_valid) is not bool:
+        return ""
+
+    if type(receipt_policy_valid) is not bool:
+        return ""
+
+    # A deterministic read projection is allowed only for a receipt whose
+    # bounded integrity/policy metadata is internally consistent and valid.
+    if filename_prefix_valid is not True:
+        return ""
+
+    if receipt_policy_valid is not True:
+        return ""
+
+    if (
+        receipt_match.group("prefix")
+        != receipt_sha256[:16]
+    ):
+        return ""
+
+    return (
+        "Bilingual Brain receipt read projection\n"
+        f"- Receipt: {receipt}\n"
+        f"- Reported SHA-256: {receipt_sha256}\n"
+        "- Filename digest prefix: valid\n"
+        "- Receipt policy: valid\n"
+        "- Receipt body: withheld\n"
+        "\n"
+        "Production authority: OFF. "
+        "Receipt body is workspace-untrusted and is not rendered. "
+        "Receipt metadata does not automatically verify semantic claims."
+    )
+
+
 def _bilingual_brain_receipt_latest_terminal_summary(
     result: dict[str, Any],
 ) -> str:
@@ -7316,6 +7441,7 @@ async def stream_agent_loop(
         _receipt_list_terminal_completed = False
         _receipt_verify_terminal_completed = False
         _receipt_latest_terminal_completed = False
+        _receipt_read_allowlist_completed = False
         budget_hit = False
         for i, block in enumerate(tool_blocks):
             # --- Tool budget check ---
@@ -7779,6 +7905,45 @@ async def stream_agent_loop(
 
                     _reva_health_terminal_completed = True
 
+            # action=read may terminate only through a strict allowlist
+            # projection.  The persisted receipt document remains
+            # workspace-untrusted; none of its body values are rendered.
+            if (
+                block.tool_type == "bilingual_brain_receipts"
+                and not result.get("error")
+            ):
+                _receipt_read_projection = (
+                    _bilingual_brain_receipt_read_allowlist_summary(
+                        result
+                    )
+                )
+
+                if _receipt_read_projection:
+                    _clean_current = (
+                        strip_tool_blocks(
+                            full_response
+                        ).strip()
+                    )
+
+                    full_response = (
+                        _receipt_read_projection
+                    )
+
+                    if (
+                        _receipt_read_projection
+                        not in _clean_current
+                    ):
+                        yield (
+                            "data: "
+                            + json.dumps({
+                                "delta":
+                                    _receipt_read_projection,
+                            })
+                            + "\n\n"
+                        )
+
+                    _receipt_read_allowlist_completed = True
+
             # action=latest may terminate deterministically only through
             # a strict top-level metadata projection.  results[0] remains
             # workspace-untrusted and is validated only for container shape;
@@ -8132,6 +8297,14 @@ async def stream_agent_loop(
 
         if (_ody_notes_finetune_mode or _ody_qwen_finetune_model) and _ody_notes_tool_completed:
             logger.info("[agent] odysseus completed from deterministic tool output")
+            break
+
+        if _receipt_read_allowlist_completed:
+            logger.info(
+                "[agent] Bilingual Brain receipt read completed from "
+                "strict safe allowlist metadata; "
+                "skipping second model round"
+            )
             break
 
         if _receipt_latest_terminal_completed:

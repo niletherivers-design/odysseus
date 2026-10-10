@@ -1148,7 +1148,7 @@ def test_v5_expected_sha256_requires_named_receipt() -> None:
     )
 
 
-def test_v5_expected_sha256_preserves_read_nonterminalization() -> None:
+def test_v5_expected_sha256_preserves_no_generic_read_terminal_helper() -> None:
     source = inspect.getsource(
         agent_loop
     )
@@ -1490,7 +1490,7 @@ def test_v6_latest_helper_is_latest_only() -> None:
     )
 
 
-def test_v6_read_remains_nonterminal() -> None:
+def test_v6_read_generic_unbounded_terminalization_remains_absent() -> None:
     source = inspect.getsource(
         agent_loop
     )
@@ -1630,4 +1630,436 @@ def test_v6_list_and_verify_terminalization_remain_preserved() -> None:
     assert (
         "_receipt_latest_terminal_completed = True"
         in source
+    )
+
+
+# ---------------------------------------------------------------------------
+# REVA Orchestration v7 — strict deterministic receipt-read allowlist
+# ---------------------------------------------------------------------------
+
+_V7_READ_RECEIPT = (
+    "20261009T043350.153555Z-"
+    "3d2b1e1fc81ad28d.json"
+)
+
+_V7_READ_SHA = (
+    "3d2b1e1fc81ad28d"
+    "733b5be2915c4b7d"
+    "5077f27834467146"
+    "42c0222b45bbb94e"
+)
+
+
+def _sample_v7_read_result() -> dict:
+    return {
+        "action":
+            "read",
+        "receipt":
+            _V7_READ_RECEIPT,
+        "receipt_sha256":
+            _V7_READ_SHA,
+        "filename_sha256_prefix_valid":
+            True,
+        "receipt_policy_valid":
+            True,
+        "semantic_claims_verified":
+            False,
+        "production_authority":
+            "OFF",
+        "results": [
+            {
+                "created_at":
+                    "DO_NOT_RENDER_CREATED_AT",
+                "schema":
+                    "DO_NOT_RENDER_SCHEMA",
+                "policy": {
+                    "secret":
+                        "DO_NOT_RENDER_POLICY",
+                },
+                "request": {
+                    "text":
+                        "DO_NOT_RENDER_REQUEST",
+                },
+                "response": {
+                    "text":
+                        "DO_NOT_RENDER_RESPONSE",
+                },
+                "content":
+                    "DO_NOT_RENDER_CONTENT",
+                "payload":
+                    "DO_NOT_RENDER_PAYLOAD",
+                "detail":
+                    "DO_NOT_RENDER_DETAIL",
+                "document": {
+                    "text":
+                        "DO_NOT_RENDER_DOCUMENT",
+                },
+            },
+        ],
+        "receipt_directory":
+            "/DO_NOT/RENDER/workspace/path",
+    }
+
+
+def test_v7_read_allowlist_summary_is_exact_and_deterministic() -> None:
+    result = _sample_v7_read_result()
+
+    summary = (
+        agent_loop
+        ._bilingual_brain_receipt_read_allowlist_summary(
+            result
+        )
+    )
+
+    assert summary == (
+        "Bilingual Brain receipt read projection\n"
+        f"- Receipt: {_V7_READ_RECEIPT}\n"
+        f"- Reported SHA-256: {_V7_READ_SHA}\n"
+        "- Filename digest prefix: valid\n"
+        "- Receipt policy: valid\n"
+        "- Receipt body: withheld\n"
+        "\n"
+        "Production authority: OFF. "
+        "Receipt body is workspace-untrusted and is not rendered. "
+        "Receipt metadata does not automatically verify semantic claims."
+    )
+
+
+def test_v7_read_allowlist_never_renders_receipt_body_values() -> None:
+    result = _sample_v7_read_result()
+
+    summary = (
+        agent_loop
+        ._bilingual_brain_receipt_read_allowlist_summary(
+            result
+        )
+    )
+
+    forbidden = (
+        "DO_NOT_RENDER_CREATED_AT",
+        "DO_NOT_RENDER_SCHEMA",
+        "DO_NOT_RENDER_POLICY",
+        "DO_NOT_RENDER_REQUEST",
+        "DO_NOT_RENDER_RESPONSE",
+        "DO_NOT_RENDER_CONTENT",
+        "DO_NOT_RENDER_PAYLOAD",
+        "DO_NOT_RENDER_DETAIL",
+        "DO_NOT_RENDER_DOCUMENT",
+        "/DO_NOT/RENDER/workspace/path",
+    )
+
+    for marker in forbidden:
+        assert marker not in summary
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("action", "latest"),
+        ("error", "read failed"),
+        ("production_authority", "ON"),
+        ("semantic_claims_verified", True),
+        ("receipt", "../unsafe.json"),
+        ("receipt_sha256", "a" * 63),
+        ("receipt_sha256", "A" * 64),
+        (
+            "receipt_sha256",
+            "0" * 64,
+        ),
+        (
+            "filename_sha256_prefix_valid",
+            False,
+        ),
+        (
+            "filename_sha256_prefix_valid",
+            1,
+        ),
+        (
+            "receipt_policy_valid",
+            False,
+        ),
+        (
+            "receipt_policy_valid",
+            "true",
+        ),
+        ("results", []),
+        (
+            "results",
+            [{}, {}],
+        ),
+        (
+            "results",
+            ["not-a-dict"],
+        ),
+        (
+            "results",
+            [{}],
+        ),
+    ),
+)
+def test_v7_read_allowlist_fails_closed(
+    field,
+    value,
+) -> None:
+    result = _sample_v7_read_result()
+    result[field] = value
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_read_allowlist_summary(
+            result
+        )
+        == ""
+    )
+
+
+def test_v7_read_allowlist_requires_false_semantic_claim() -> None:
+    result = _sample_v7_read_result()
+
+    result.pop(
+        "semantic_claims_verified"
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_read_allowlist_summary(
+            result
+        )
+        == ""
+    )
+
+
+def test_v7_read_router_uses_existing_named_receipt_action() -> None:
+    text = (
+        "read Brain receipt "
+        f"{_V7_READ_RECEIPT}"
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_args_from_text(
+            text
+        )
+        == {
+            "action":
+                "read",
+            "receipt":
+                _V7_READ_RECEIPT,
+        }
+    )
+
+
+def test_v7_read_allowlist_helper_is_read_only() -> None:
+    read_result = _sample_v7_read_result()
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_read_allowlist_summary(
+            read_result
+        )
+    )
+
+    latest_result = _sample_v6_latest_result()
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_read_allowlist_summary(
+            latest_result
+        )
+        == ""
+    )
+
+    list_result = _sample_receipt_list_result()
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_read_allowlist_summary(
+            list_result
+        )
+        == ""
+    )
+
+    verify_result = _sample_receipt_verify_result()
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_read_allowlist_summary(
+            verify_result
+        )
+        == ""
+    )
+
+
+def test_v7_read_allowlist_uses_no_untrusted_body_values() -> None:
+    helper = inspect.getsource(
+        agent_loop
+        ._bilingual_brain_receipt_read_allowlist_summary
+    )
+
+    for required in (
+        'result.get("action") != "read"',
+        'result.get("production_authority") != "OFF"',
+        'result.get("semantic_claims_verified") is not False',
+        'result.get("receipt")',
+        '"receipt_sha256"',
+        '"filename_sha256_prefix_valid"',
+        '"receipt_policy_valid"',
+        '"created_at"',
+        '"schema"',
+        '"policy"',
+        '"request"',
+        '"response"',
+        r"[0-9a-f]{64}",
+    ):
+        assert required in helper
+
+    for forbidden in (
+        'item.get("created_at")',
+        'item.get("schema")',
+        'item.get("policy")',
+        'item.get("request")',
+        'item.get("response")',
+        'item.get("content")',
+        'item.get("payload")',
+        'item.get("detail")',
+        'item.get("document")',
+        'results[0].get("created_at")',
+        'results[0].get("schema")',
+        'results[0].get("policy")',
+        'results[0].get("request")',
+        'results[0].get("response")',
+        'result.get("receipt_directory")',
+    ):
+        assert forbidden not in helper
+
+
+def test_v7_generic_unbounded_read_terminal_helper_remains_absent() -> None:
+    source = inspect.getsource(
+        agent_loop
+    )
+
+    assert (
+        "_receipt_read_terminal_summary"
+        not in source
+    )
+
+    assert (
+        "_receipt_read_terminal_completed"
+        not in source
+    )
+
+    assert (
+        "_bilingual_brain_receipt_read_allowlist_summary"
+        in source
+    )
+
+    assert (
+        "_receipt_read_allowlist_completed"
+        in source
+    )
+
+
+def test_v7_read_allowlist_breaks_before_next_model_round() -> None:
+    source = inspect.getsource(
+        agent_loop
+    )
+
+    render_marker = (
+        "_receipt_read_projection ="
+    )
+
+    completed_marker = (
+        "_receipt_read_allowlist_completed = True"
+    )
+
+    break_marker = (
+        "if _receipt_read_allowlist_completed:"
+    )
+
+    feed_marker = (
+        "# Feed results back to LLM for next round"
+    )
+
+    render_pos = source.index(
+        render_marker
+    )
+
+    completed_pos = source.index(
+        completed_marker,
+        render_pos,
+    )
+
+    break_pos = source.index(
+        break_marker,
+        completed_pos,
+    )
+
+    feed_pos = source.index(
+        feed_marker,
+        break_pos,
+    )
+
+    assert (
+        render_pos
+        < completed_pos
+        < break_pos
+        < feed_pos
+    )
+
+    assert (
+        "strict safe allowlist metadata"
+        in source[
+            break_pos:
+            feed_pos
+        ]
+    )
+
+    assert (
+        "skipping second model round"
+        in source[
+            break_pos:
+            feed_pos
+        ]
+    )
+
+
+def test_v7_predecessor_terminalizations_remain_preserved() -> None:
+    source = inspect.getsource(
+        agent_loop
+    )
+
+    for helper in (
+        "_bilingual_brain_receipt_list_terminal_summary",
+        "_bilingual_brain_receipt_verify_terminal_summary",
+        "_bilingual_brain_receipt_latest_terminal_summary",
+        "_bilingual_brain_receipt_read_allowlist_summary",
+    ):
+        assert helper in source
+
+    for completed in (
+        "_receipt_list_terminal_completed = True",
+        "_receipt_verify_terminal_completed = True",
+        "_receipt_latest_terminal_completed = True",
+        "_receipt_read_allowlist_completed = True",
+    ):
+        assert completed in source
+
+
+def test_v7_read_allowlist_does_not_upgrade_result_integrity() -> None:
+    helper = inspect.getsource(
+        agent_loop
+        ._bilingual_brain_receipt_read_allowlist_summary
+    )
+
+    assert "WORKSPACE_TRUSTED" not in helper
+    assert "TRUSTED" not in helper
+
+    assert (
+        "workspace-untrusted"
+        in helper
+    )
+
+    assert (
+        "does not automatically verify semantic claims"
+        in helper
     )
