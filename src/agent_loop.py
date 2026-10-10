@@ -2359,6 +2359,108 @@ def _normalize_ody_qwen_text_artifacts(text: str) -> str:
     return fixed
 
 
+def _bilingual_brain_receipt_latest_terminal_summary(
+    result: dict[str, Any],
+) -> str:
+    """Render only validated bounded metadata from action=latest.
+
+    The underlying receipt document and result object remain
+    workspace-untrusted.  This projection deliberately ignores all
+    request/response/schema/policy/body content in results[0].
+
+    Latest-receipt metadata is observational metadata only.  It is not
+    semantic verification and does not enable production authority.
+    """
+
+    if not isinstance(result, dict):
+        return ""
+
+    if result.get("error"):
+        return ""
+
+    if result.get("action") != "latest":
+        return ""
+
+    if result.get("production_authority") != "OFF":
+        return ""
+
+    if result.get("semantic_claims_verified") is not False:
+        return ""
+
+    results = result.get("results")
+
+    if (
+        not isinstance(results, list)
+        or len(results) != 1
+        or not isinstance(results[0], dict)
+    ):
+        return ""
+
+    receipt = result.get("receipt")
+
+    if not isinstance(receipt, str):
+        return ""
+
+    receipt_name_re = re.compile(
+        r"^\d{8}T\d{6}\.\d{6}Z-[0-9a-f]{16}\.json$"
+    )
+
+    if receipt_name_re.fullmatch(receipt) is None:
+        return ""
+
+    receipt_sha256 = result.get(
+        "receipt_sha256"
+    )
+
+    if (
+        not isinstance(receipt_sha256, str)
+        or re.fullmatch(
+            r"[0-9a-f]{64}",
+            receipt_sha256,
+        )
+        is None
+    ):
+        return ""
+
+    filename_prefix_valid = result.get(
+        "filename_sha256_prefix_valid"
+    )
+
+    receipt_policy_valid = result.get(
+        "receipt_policy_valid"
+    )
+
+    if type(filename_prefix_valid) is not bool:
+        return ""
+
+    if type(receipt_policy_valid) is not bool:
+        return ""
+
+    filename_state = (
+        "valid"
+        if filename_prefix_valid
+        else "invalid"
+    )
+
+    policy_state = (
+        "valid"
+        if receipt_policy_valid
+        else "invalid"
+    )
+
+    return (
+        "Latest Bilingual Brain receipt metadata\n"
+        f"- Receipt: {receipt}\n"
+        f"- Reported SHA-256: {receipt_sha256}\n"
+        f"- Filename digest prefix: {filename_state}\n"
+        f"- Receipt policy: {policy_state}\n"
+        "\n"
+        "Production authority: OFF. "
+        "Receipt metadata is workspace-untrusted and does not "
+        "automatically verify semantic claims."
+    )
+
+
 def _bilingual_brain_receipt_verify_terminal_summary(
     result: dict[str, Any],
 ) -> str:
@@ -7213,6 +7315,7 @@ async def stream_agent_loop(
         _reva_health_terminal_completed = False
         _receipt_list_terminal_completed = False
         _receipt_verify_terminal_completed = False
+        _receipt_latest_terminal_completed = False
         budget_hit = False
         for i, block in enumerate(tool_blocks):
             # --- Tool budget check ---
@@ -7676,6 +7779,46 @@ async def stream_agent_loop(
 
                     _reva_health_terminal_completed = True
 
+            # action=latest may terminate deterministically only through
+            # a strict top-level metadata projection.  results[0] remains
+            # workspace-untrusted and is validated only for container shape;
+            # its request/response/schema/policy content is never rendered.
+            if (
+                block.tool_type == "bilingual_brain_receipts"
+                and not result.get("error")
+            ):
+                _receipt_latest_summary = (
+                    _bilingual_brain_receipt_latest_terminal_summary(
+                        result
+                    )
+                )
+
+                if _receipt_latest_summary:
+                    _clean_current = (
+                        strip_tool_blocks(
+                            full_response
+                        ).strip()
+                    )
+
+                    full_response = (
+                        _receipt_latest_summary
+                    )
+
+                    if (
+                        _receipt_latest_summary
+                        not in _clean_current
+                    ):
+                        yield (
+                            "data: "
+                            + json.dumps({
+                                "delta":
+                                    _receipt_latest_summary,
+                            })
+                            + "\n\n"
+                        )
+
+                    _receipt_latest_terminal_completed = True
+
             # action=verify may terminate deterministically only through
             # the strict fixed-field integrity projection above.  The raw
             # verification dictionary and receipt document are never rendered.
@@ -7989,6 +8132,14 @@ async def stream_agent_loop(
 
         if (_ody_notes_finetune_mode or _ody_qwen_finetune_model) and _ody_notes_tool_completed:
             logger.info("[agent] odysseus completed from deterministic tool output")
+            break
+
+        if _receipt_latest_terminal_completed:
+            logger.info(
+                "[agent] Bilingual Brain receipt latest completed from "
+                "safe deterministic metadata; "
+                "skipping second model round"
+            )
             break
 
         if _receipt_verify_terminal_completed:
