@@ -598,12 +598,404 @@ def test_receipt_v3_terminalization_is_explicitly_list_only() -> None:
         in source
     )
 
-    # No independent content-reading terminal helper is allowed.
-    forbidden_helpers = (
-        "_receipt_read_terminal_summary",
-        "_receipt_latest_terminal_summary",
-        "_receipt_verify_terminal_summary",
+    # V4 intentionally adds a strictly allowlisted verify-integrity
+    # terminal helper.  Persisted receipt content readers must still
+    # never receive deterministic terminalization.
+    assert (
+        "_bilingual_brain_receipt_verify_terminal_summary"
+        in source
     )
 
-    for marker in forbidden_helpers:
+    forbidden_content_helpers = (
+        "_receipt_read_terminal_summary",
+        "_receipt_latest_terminal_summary",
+    )
+
+    for marker in forbidden_content_helpers:
         assert marker not in source
+
+
+def _sample_receipt_verify_result(
+    *,
+    verified: bool = True,
+    filename_prefix: bool = True,
+    expected_check: bool | None = True,
+) -> dict:
+    checks = {
+        "filename_sha256_prefix":
+            filename_prefix,
+    }
+
+    if expected_check is not None:
+        checks["expected_sha256"] = (
+            expected_check
+        )
+
+    return {
+        "results": [
+            {
+                "verified":
+                    verified,
+                "sha256":
+                    (
+                        "3d2b1e1fc81ad28d"
+                        "733b5be2915c4b7d"
+                        "5077f27834467146"
+                        "42c0222b45bbb94e"
+                    ),
+                "checks":
+                    checks,
+                "semantic_claims_verified":
+                    False,
+                "production_authority":
+                    "OFF",
+
+                # Deliberately hostile extras.  A deterministic terminal
+                # projection must never render these.
+                "content":
+                    "DO_NOT_RENDER_CONTENT",
+                "payload":
+                    "DO_NOT_RENDER_PAYLOAD",
+                "detail":
+                    "DO_NOT_RENDER_DETAIL",
+                "document": {
+                    "message":
+                        "DO_NOT_RENDER_DOCUMENT",
+                },
+            },
+        ],
+        "action":
+            "verify",
+        "receipt":
+            (
+                "20261009T043350.153555Z-"
+                "3d2b1e1fc81ad28d.json"
+            ),
+        "semantic_claims_verified":
+            False,
+        "production_authority":
+            "OFF",
+        "receipt_directory":
+            "/DO_NOT/RENDER/workspace/path",
+    }
+
+
+def test_receipt_verify_terminal_summary_exact_pass() -> None:
+    result = _sample_receipt_verify_result()
+
+    summary = (
+        agent_loop
+        ._bilingual_brain_receipt_verify_terminal_summary(
+            result
+        )
+    )
+
+    expected = (
+        "Bilingual Brain receipt integrity: PASS\n"
+        "- Receipt: "
+        "20261009T043350.153555Z-"
+        "3d2b1e1fc81ad28d.json\n"
+        "- SHA-256: "
+        "3d2b1e1fc81ad28d"
+        "733b5be2915c4b7d"
+        "5077f27834467146"
+        "42c0222b45bbb94e\n"
+        "- Filename digest prefix: valid\n"
+        "- Expected SHA-256: match\n"
+        "\n"
+        "Production authority: OFF. "
+        "Receipt integrity does not automatically "
+        "verify semantic claims."
+    )
+
+    assert summary == expected
+
+
+def test_receipt_verify_terminal_summary_exact_fail() -> None:
+    result = _sample_receipt_verify_result(
+        verified=False,
+        filename_prefix=False,
+        expected_check=False,
+    )
+
+    summary = (
+        agent_loop
+        ._bilingual_brain_receipt_verify_terminal_summary(
+            result
+        )
+    )
+
+    assert (
+        "Bilingual Brain receipt integrity: FAIL"
+        in summary
+    )
+
+    assert (
+        "- Filename digest prefix: invalid"
+        in summary
+    )
+
+    assert (
+        "- Expected SHA-256: mismatch"
+        in summary
+    )
+
+
+def test_receipt_verify_terminal_summary_allows_no_expected_digest() -> None:
+    result = _sample_receipt_verify_result(
+        expected_check=None,
+    )
+
+    summary = (
+        agent_loop
+        ._bilingual_brain_receipt_verify_terminal_summary(
+            result
+        )
+    )
+
+    assert summary
+    assert "- Expected SHA-256:" not in summary
+
+
+def test_receipt_verify_terminal_summary_excludes_untrusted_content() -> None:
+    summary = (
+        agent_loop
+        ._bilingual_brain_receipt_verify_terminal_summary(
+            _sample_receipt_verify_result()
+        )
+    )
+
+    assert summary
+
+    forbidden = (
+        "DO_NOT_RENDER_CONTENT",
+        "DO_NOT_RENDER_PAYLOAD",
+        "DO_NOT_RENDER_DETAIL",
+        "DO_NOT_RENDER_DOCUMENT",
+        "/DO_NOT/RENDER/workspace/path",
+        "receipt_directory",
+        '"document"',
+        '"payload"',
+        '"content"',
+        '"detail"',
+    )
+
+    for value in forbidden:
+        assert value not in summary
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        "list",
+        "latest",
+        "read",
+    ],
+)
+def test_receipt_verify_terminal_summary_refuses_other_actions(
+    action: str,
+) -> None:
+    result = _sample_receipt_verify_result()
+    result["action"] = action
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_verify_terminal_summary(
+            result
+        )
+        == ""
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "bad_top_authority",
+        "bad_top_semantic",
+        "bad_receipt",
+        "bad_results",
+        "multiple_results",
+        "bad_verification_authority",
+        "bad_verification_semantic",
+        "bad_verified_type",
+        "bad_sha",
+        "bad_checks",
+        "bad_filename_check",
+        "bad_expected_check",
+    ],
+)
+def test_receipt_verify_terminal_summary_fails_closed(
+    mutation: str,
+) -> None:
+    result = _sample_receipt_verify_result()
+
+    verification = result["results"][0]
+
+    if mutation == "bad_top_authority":
+        result["production_authority"] = "ON"
+    elif mutation == "bad_top_semantic":
+        result["semantic_claims_verified"] = True
+    elif mutation == "bad_receipt":
+        result["receipt"] = "../receipt.json"
+    elif mutation == "bad_results":
+        result["results"] = {
+            "verified": True,
+        }
+    elif mutation == "multiple_results":
+        result["results"].append(
+            dict(verification)
+        )
+    elif mutation == "bad_verification_authority":
+        verification["production_authority"] = "ON"
+    elif mutation == "bad_verification_semantic":
+        verification["semantic_claims_verified"] = True
+    elif mutation == "bad_verified_type":
+        verification["verified"] = 1
+    elif mutation == "bad_sha":
+        verification["sha256"] = "xyz"
+    elif mutation == "bad_checks":
+        verification["checks"] = [
+            "unsafe",
+        ]
+    elif mutation == "bad_filename_check":
+        verification["checks"][
+            "filename_sha256_prefix"
+        ] = "yes"
+    elif mutation == "bad_expected_check":
+        verification["checks"][
+            "expected_sha256"
+        ] = "yes"
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_verify_terminal_summary(
+            result
+        )
+        == ""
+    )
+
+
+def test_receipt_verify_terminal_source_is_verify_only() -> None:
+    source = inspect.getsource(
+        agent_loop
+    )
+
+    helper = inspect.getsource(
+        agent_loop
+        ._bilingual_brain_receipt_verify_terminal_summary
+    )
+
+    assert (
+        'result.get("action") != "verify"'
+        in helper
+    )
+
+    assert (
+        'result.get("production_authority") != "OFF"'
+        in helper
+    )
+
+    assert (
+        'result.get("semantic_claims_verified") is not False'
+        in helper
+    )
+
+    assert (
+        "_receipt_verify_terminal_completed"
+        in source
+    )
+
+    assert (
+        "_receipt_read_terminal_summary"
+        not in source
+    )
+
+    assert (
+        "_receipt_latest_terminal_summary"
+        not in source
+    )
+
+
+def test_receipt_verify_terminal_break_precedes_next_model_round() -> None:
+    source = inspect.getsource(
+        agent_loop
+    )
+
+    render_marker = (
+        "_receipt_verify_summary ="
+    )
+
+    complete_marker = (
+        "_receipt_verify_terminal_completed = True"
+    )
+
+    break_marker = (
+        "if _receipt_verify_terminal_completed:"
+    )
+
+    feed_marker = (
+        "# Feed results back to LLM for next round"
+    )
+
+    render_pos = source.index(
+        render_marker
+    )
+
+    complete_pos = source.index(
+        complete_marker,
+        render_pos,
+    )
+
+    break_pos = source.index(
+        break_marker,
+        complete_pos,
+    )
+
+    feed_pos = source.index(
+        feed_marker,
+        break_pos,
+    )
+
+    assert (
+        render_pos
+        < complete_pos
+        < break_pos
+        < feed_pos
+    )
+
+    assert (
+        "safe deterministic integrity metadata"
+        in source[
+            break_pos:
+            feed_pos
+        ]
+    )
+
+
+def test_v3_list_terminalization_remains_independent() -> None:
+    list_result = _sample_receipt_list_result()
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_list_terminal_summary(
+            list_result
+        )
+    )
+
+    verify_result = _sample_receipt_verify_result()
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_list_terminal_summary(
+            verify_result
+        )
+        == ""
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_verify_terminal_summary(
+            list_result
+        )
+        == ""
+    )

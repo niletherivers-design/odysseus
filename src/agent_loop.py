@@ -2295,6 +2295,158 @@ def _normalize_ody_qwen_text_artifacts(text: str) -> str:
     return fixed
 
 
+def _bilingual_brain_receipt_verify_terminal_summary(
+    result: dict[str, Any],
+) -> str:
+    """Render only fixed integrity metadata from action=verify.
+
+    Receipt documents remain workspace-untrusted.  This projection never
+    renders the receipt document, arbitrary nested dictionaries, workspace
+    paths, payloads, model text, or free-form error/detail fields.
+
+    File integrity is explicitly NOT semantic verification.
+    """
+
+    if not isinstance(result, dict):
+        return ""
+
+    if result.get("error"):
+        return ""
+
+    if result.get("action") != "verify":
+        return ""
+
+    if result.get("production_authority") != "OFF":
+        return ""
+
+    if result.get("semantic_claims_verified") is not False:
+        return ""
+
+    receipt = result.get("receipt")
+
+    if not isinstance(receipt, str):
+        return ""
+
+    receipt_name_re = re.compile(
+        r"^\d{8}T\d{6}\.\d{6}Z-[0-9a-f]{16}\.json$"
+    )
+
+    if receipt_name_re.fullmatch(receipt) is None:
+        return ""
+
+    results = result.get("results")
+
+    if (
+        not isinstance(results, list)
+        or len(results) != 1
+        or not isinstance(results[0], dict)
+    ):
+        return ""
+
+    verification = results[0]
+
+    if verification.get("production_authority") != "OFF":
+        return ""
+
+    if (
+        verification.get("semantic_claims_verified")
+        is not False
+    ):
+        return ""
+
+    verified = verification.get("verified")
+
+    if not isinstance(verified, bool):
+        return ""
+
+    sha256 = verification.get("sha256")
+
+    if (
+        not isinstance(sha256, str)
+        or re.fullmatch(
+            r"[0-9a-fA-F]{64}",
+            sha256,
+        )
+        is None
+    ):
+        return ""
+
+    sha256 = sha256.lower()
+
+    checks = verification.get("checks")
+
+    if not isinstance(checks, dict):
+        return ""
+
+    filename_prefix = checks.get(
+        "filename_sha256_prefix"
+    )
+
+    if not isinstance(filename_prefix, bool):
+        return ""
+
+    expected_check = checks.get(
+        "expected_sha256"
+    )
+
+    if (
+        expected_check is not None
+        and not isinstance(
+            expected_check,
+            bool,
+        )
+    ):
+        return ""
+
+    status = (
+        "PASS"
+        if verified
+        else "FAIL"
+    )
+
+    prefix_status = (
+        "valid"
+        if filename_prefix
+        else "invalid"
+    )
+
+    lines = [
+        (
+            "Bilingual Brain receipt integrity: "
+            f"{status}"
+        ),
+        f"- Receipt: {receipt}",
+        f"- SHA-256: {sha256}",
+        (
+            "- Filename digest prefix: "
+            f"{prefix_status}"
+        ),
+    ]
+
+    if expected_check is not None:
+        expected_status = (
+            "match"
+            if expected_check
+            else "mismatch"
+        )
+
+        lines.append(
+            "- Expected SHA-256: "
+            f"{expected_status}"
+        )
+
+    lines.extend([
+        "",
+        (
+            "Production authority: OFF. "
+            "Receipt integrity does not automatically "
+            "verify semantic claims."
+        ),
+    ])
+
+    return "\n".join(lines)
+
+
 def _bilingual_brain_receipt_list_terminal_summary(
     result: dict[str, Any],
 ) -> str:
@@ -6996,6 +7148,7 @@ async def stream_agent_loop(
         tool_result_records = []  # aligned structured provenance for next round
         _reva_health_terminal_completed = False
         _receipt_list_terminal_completed = False
+        _receipt_verify_terminal_completed = False
         budget_hit = False
         for i, block in enumerate(tool_blocks):
             # --- Tool budget check ---
@@ -7459,6 +7612,45 @@ async def stream_agent_loop(
 
                     _reva_health_terminal_completed = True
 
+            # action=verify may terminate deterministically only through
+            # the strict fixed-field integrity projection above.  The raw
+            # verification dictionary and receipt document are never rendered.
+            if (
+                block.tool_type == "bilingual_brain_receipts"
+                and not result.get("error")
+            ):
+                _receipt_verify_summary = (
+                    _bilingual_brain_receipt_verify_terminal_summary(
+                        result
+                    )
+                )
+
+                if _receipt_verify_summary:
+                    _clean_current = (
+                        strip_tool_blocks(
+                            full_response
+                        ).strip()
+                    )
+
+                    full_response = (
+                        _receipt_verify_summary
+                    )
+
+                    if (
+                        _receipt_verify_summary
+                        not in _clean_current
+                    ):
+                        yield (
+                            "data: "
+                            + json.dumps({
+                                "delta":
+                                    _receipt_verify_summary,
+                            })
+                            + "\n\n"
+                        )
+
+                    _receipt_verify_terminal_completed = True
+
             # Receipt contents are workspace-untrusted.  Only action=list may
             # terminate deterministically, and only after projecting the
             # canonical filename/size metadata through a strict allowlist.
@@ -7733,6 +7925,14 @@ async def stream_agent_loop(
 
         if (_ody_notes_finetune_mode or _ody_qwen_finetune_model) and _ody_notes_tool_completed:
             logger.info("[agent] odysseus completed from deterministic tool output")
+            break
+
+        if _receipt_verify_terminal_completed:
+            logger.info(
+                "[agent] Bilingual Brain receipt verify completed from "
+                "safe deterministic integrity metadata; "
+                "skipping second model round"
+            )
             break
 
         if _receipt_list_terminal_completed:
