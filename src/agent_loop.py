@@ -2295,6 +2295,120 @@ def _normalize_ody_qwen_text_artifacts(text: str) -> str:
     return fixed
 
 
+def _reva_health_terminal_summary(
+    result: dict[str, Any],
+) -> str:
+    """Render a safe deterministic terminal answer for reva_health.
+
+    Only the fixed overall/check status fields are rendered. Diagnostic detail,
+    metadata, credentials, endpoint values, paths, and receipt contents are
+    deliberately excluded from the user-facing summary.
+    """
+
+    if not isinstance(result, dict):
+        return ""
+
+    if result.get("error"):
+        return ""
+
+    if result.get("service") != "reva":
+        return ""
+
+    if result.get("production_authority") != "OFF":
+        return ""
+
+    safety_contract = (
+        result.get("network_access") is False
+        and result.get("brain_executed") is False
+        and result.get("model_executed") is False
+        and result.get("receipt_generated") is False
+        and result.get("semantic_claims_verified") is False
+        and result.get("secret_values_exposed") is False
+    )
+
+    if not safety_contract:
+        return ""
+
+    overall = str(
+        result.get("overall")
+        or ""
+    ).strip().lower()
+
+    if overall not in {
+        "ok",
+        "degraded",
+    }:
+        return ""
+
+    checks = result.get("results")
+
+    if not isinstance(checks, list):
+        return ""
+
+    labels = {
+        "tool_registry":
+            "Tool registry",
+        "brain_configuration":
+            "Brain configuration",
+        "receipt_configuration":
+            "Receipt configuration",
+        "latest_receipt_integrity":
+            "Latest receipt integrity",
+        "meshcore_policy_invariants":
+            "MeshCore policy invariants",
+    }
+
+    allowed_statuses = {
+        "ok",
+        "degraded",
+        "disabled",
+    }
+
+    observed: dict[str, str] = {}
+
+    for item in checks:
+        if not isinstance(item, dict):
+            continue
+
+        name = str(
+            item.get("name")
+            or ""
+        ).strip()
+
+        status = str(
+            item.get("status")
+            or ""
+        ).strip().lower()
+
+        if (
+            name in labels
+            and status in allowed_statuses
+        ):
+            observed[name] = status
+
+    if set(observed) != set(labels):
+        return ""
+
+    lines = [
+        f"REVA health: {overall}",
+    ]
+
+    for name, label in labels.items():
+        lines.append(
+            f"- {label}: {observed[name]}"
+        )
+
+    lines.extend([
+        "",
+        (
+            "Production authority: OFF. "
+            "Semantic claims are not automatically verified."
+        ),
+    ])
+
+    return "\n".join(lines)
+
+
 def _ody_qwen_terminal_tool_summary(tool_event: dict[str, Any]) -> str:
     """Return a deterministic user-facing answer for tools we can render safely."""
     tool_name = _resolved_tool_event_name(tool_event)
@@ -6769,6 +6883,7 @@ async def stream_agent_loop(
         tool_results = []
         tool_result_texts = []  # plain text for native tool role messages
         tool_result_records = []  # aligned structured provenance for next round
+        _reva_health_terminal_completed = False
         budget_hit = False
         for i, block in enumerate(tool_blocks):
             # --- Tool budget check ---
@@ -7192,6 +7307,46 @@ async def stream_agent_loop(
             if "diff" in result:
                 tool_output_data["diff"] = result["diff"]
             yield f'data: {json.dumps(tool_output_data)}\n\n'
+
+            # reva_health is already a structured, read-only diagnostic.
+            # Render only its fixed status fields and end the turn directly
+            # instead of spending a second model round paraphrasing the result.
+            if (
+                block.tool_type == "reva_health"
+                and not result.get("error")
+            ):
+                _reva_health_summary = (
+                    _reva_health_terminal_summary(
+                        result
+                    )
+                )
+
+                if _reva_health_summary:
+                    _clean_current = (
+                        strip_tool_blocks(
+                            full_response
+                        ).strip()
+                    )
+
+                    full_response = (
+                        _reva_health_summary
+                    )
+
+                    if (
+                        _reva_health_summary
+                        not in _clean_current
+                    ):
+                        yield (
+                            "data: "
+                            + json.dumps({
+                                "delta":
+                                    _reva_health_summary,
+                            })
+                            + "\n\n"
+                        )
+
+                    _reva_health_terminal_completed = True
+
             if result.get("image_url"):
                 generated_image_data = {"type": "generated_image", "url": result.get("image_url")}
                 for k in ("image_url", "image_id", "image_prompt", "image_model", "image_size", "image_quality"):
@@ -7425,6 +7580,13 @@ async def stream_agent_loop(
 
         if (_ody_notes_finetune_mode or _ody_qwen_finetune_model) and _ody_notes_tool_completed:
             logger.info("[agent] odysseus completed from deterministic tool output")
+            break
+
+        if _reva_health_terminal_completed:
+            logger.info(
+                "[agent] REVA health completed from deterministic "
+                "structured tool result; skipping second model round"
+            )
             break
 
         # Feed results back to LLM for next round

@@ -259,3 +259,260 @@ def test_health_router_has_empty_argument_contract() -> None:
         )
         == {}
     )
+
+
+def _sample_reva_health_result() -> dict:
+    return {
+        "service": "reva",
+        "overall": "degraded",
+        "results": [
+            {
+                "name": "tool_registry",
+                "status": "ok",
+                "detail":
+                    "DO_NOT_RENDER_REGISTRY_DETAIL",
+                "meta": {
+                    "credential":
+                        "DO_NOT_RENDER_REGISTRY_META",
+                },
+            },
+            {
+                "name": "brain_configuration",
+                "status": "degraded",
+                "detail":
+                    "DO_NOT_RENDER_BRAIN_DETAIL",
+                "meta": {
+                    "password":
+                        "DO_NOT_RENDER_PASSWORD",
+                },
+            },
+            {
+                "name": "receipt_configuration",
+                "status": "disabled",
+                "detail":
+                    "DO_NOT_RENDER_RECEIPT_DIRECTORY",
+                "meta": {
+                    "path":
+                        "/secret/receipt/path",
+                },
+            },
+            {
+                "name":
+                    "latest_receipt_integrity",
+                "status": "ok",
+                "detail":
+                    "DO_NOT_RENDER_RECEIPT_CONTENT",
+                "meta": {
+                    "receipt_payload":
+                        "DO_NOT_RENDER_PAYLOAD",
+                },
+            },
+            {
+                "name":
+                    "meshcore_policy_invariants",
+                "status": "ok",
+                "detail":
+                    "DO_NOT_RENDER_POLICY_DETAIL",
+                "meta": {
+                    "private_key":
+                        "DO_NOT_RENDER_PRIVATE_KEY",
+                },
+            },
+        ],
+        "network_access": False,
+        "brain_executed": False,
+        "model_executed": False,
+        "receipt_generated": False,
+        "semantic_claims_verified": False,
+        "production_authority": "OFF",
+        "secret_values_exposed": False,
+    }
+
+
+def test_reva_health_terminal_summary_is_exact_and_deterministic() -> None:
+    result = _sample_reva_health_result()
+
+    expected = (
+        "REVA health: degraded\n"
+        "- Tool registry: ok\n"
+        "- Brain configuration: degraded\n"
+        "- Receipt configuration: disabled\n"
+        "- Latest receipt integrity: ok\n"
+        "- MeshCore policy invariants: ok\n"
+        "\n"
+        "Production authority: OFF. "
+        "Semantic claims are not automatically verified."
+    )
+
+    first = (
+        agent_loop._reva_health_terminal_summary(
+            result
+        )
+    )
+
+    second = (
+        agent_loop._reva_health_terminal_summary(
+            result
+        )
+    )
+
+    assert first == expected
+    assert second == expected
+    assert first == second
+
+
+def test_reva_health_terminal_summary_does_not_render_detail_or_meta() -> None:
+    summary = (
+        agent_loop._reva_health_terminal_summary(
+            _sample_reva_health_result()
+        )
+    )
+
+    assert summary
+
+    forbidden = (
+        "DO_NOT_RENDER_REGISTRY_DETAIL",
+        "DO_NOT_RENDER_REGISTRY_META",
+        "DO_NOT_RENDER_BRAIN_DETAIL",
+        "DO_NOT_RENDER_PASSWORD",
+        "DO_NOT_RENDER_RECEIPT_DIRECTORY",
+        "/secret/receipt/path",
+        "DO_NOT_RENDER_RECEIPT_CONTENT",
+        "DO_NOT_RENDER_PAYLOAD",
+        "DO_NOT_RENDER_POLICY_DETAIL",
+        "DO_NOT_RENDER_PRIVATE_KEY",
+    )
+
+    for value in forbidden:
+        assert value not in summary
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("network_access", True),
+        ("brain_executed", True),
+        ("model_executed", True),
+        ("receipt_generated", True),
+        (
+            "semantic_claims_verified",
+            True,
+        ),
+        (
+            "production_authority",
+            "ON",
+        ),
+        (
+            "secret_values_exposed",
+            True,
+        ),
+    ],
+)
+def test_reva_health_terminal_summary_refuses_broken_safety_contract(
+    field: str,
+    value: object,
+) -> None:
+    result = _sample_reva_health_result()
+    result[field] = value
+
+    assert (
+        agent_loop._reva_health_terminal_summary(
+            result
+        )
+        == ""
+    )
+
+
+def test_reva_health_terminal_summary_requires_complete_known_checks() -> None:
+    result = _sample_reva_health_result()
+
+    result["results"] = (
+        result["results"][:-1]
+    )
+
+    assert (
+        agent_loop._reva_health_terminal_summary(
+            result
+        )
+        == ""
+    )
+
+
+def test_reva_health_terminal_path_breaks_before_next_model_round() -> None:
+    source = inspect.getsource(
+        agent_loop
+    )
+
+    render_marker = (
+        'block.tool_type == "reva_health"'
+    )
+
+    completed_marker = (
+        "_reva_health_terminal_completed = True"
+    )
+
+    break_marker = (
+        "if _reva_health_terminal_completed:"
+    )
+
+    next_round_marker = (
+        "_append_tool_results("
+        "messages, round_response, converted_calls,"
+    )
+
+    render_pos = source.index(
+        render_marker
+    )
+
+    completed_pos = source.index(
+        completed_marker,
+        render_pos,
+    )
+
+    break_pos = source.index(
+        break_marker,
+        completed_pos,
+    )
+
+    next_round_pos = source.index(
+        next_round_marker,
+        break_pos,
+    )
+
+    assert (
+        render_pos
+        < completed_pos
+        < break_pos
+        < next_round_pos
+    )
+
+    assert (
+        "skipping second model round"
+        in source[
+            break_pos:
+            next_round_pos
+        ]
+    )
+
+
+def test_reva_health_terminal_path_preserves_existing_terminal_rules() -> None:
+    source = inspect.getsource(
+        agent_loop
+    )
+
+    assert (
+        "if (_ody_notes_finetune_mode or "
+        "_ody_qwen_finetune_model) "
+        "and _ody_notes_tool_completed:"
+        in source
+    )
+
+    assert (
+        "if _ody_doc_tool_completed:"
+        in source
+    )
+
+    assert (
+        "if _doc_stream_create_completed:"
+        in source
+    )
