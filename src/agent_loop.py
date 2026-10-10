@@ -1513,6 +1513,137 @@ def _reva_health_args_from_text(
     return {}
 
 
+def _bilingual_brain_receipt_explicit_actions(
+    text: str,
+) -> Set[str]:
+    """Return bounded explicit receipt-operation signals from one user turn.
+
+    This helper only classifies receipt-routing language. It does not read
+    receipts, execute tools, or alter receipt/MeshCore semantics.
+    """
+
+    raw = str(text or "").strip()
+
+    if not raw:
+        return set()
+
+    q = raw.lower()
+
+    canonical_receipt_named = bool(
+        re.search(
+            r"\b"
+            r"\d{8}T"
+            r"\d{6}\."
+            r"\d{6}Z-"
+            r"[0-9a-fA-F]{16}"
+            r"\.json\b",
+            raw,
+        )
+    )
+
+    explicit_receipt_context = bool(
+        re.search(
+            r"\b(?:bilingual\s+brain|brain|meshcore|evidence)\b",
+            q,
+        )
+    )
+
+    # A canonical immutable receipt filename is itself strong receipt context.
+    # This lets compound requests such as
+    # "show my latest receipt and verify receipt <canonical-name>"
+    # fail closed without broadening ordinary shopping/payment receipt routing.
+    if (
+        re.search(r"\breceipts?\b", q) is None
+        or (
+            not explicit_receipt_context
+            and not canonical_receipt_named
+        )
+    ):
+        return set()
+
+    actions: Set[str] = set()
+
+    if re.search(
+        r"\b(?:verify|check|validate|integrity|hash|sha-?256)\b",
+        q,
+    ):
+        actions.add("verify")
+
+    if re.search(
+        r"\b(?:read|open|view|fetch|retrieve|display|inspect)\b",
+        q,
+    ):
+        actions.add("read")
+
+    if (
+        re.search(r"\blist\b", q)
+        or (
+            re.search(r"\breceipts\b", q)
+            and re.search(
+                r"\b(?:all|available|what|which)\b",
+                q,
+            )
+        )
+    ):
+        actions.add("list")
+
+    if re.search(
+        r"\b(?:latest|last|newest|recent)\b",
+        q,
+    ):
+        actions.add("latest")
+
+    return actions
+
+
+def _bilingual_brain_receipt_request_is_ambiguous(
+    text: str,
+) -> bool:
+    """Fail closed when one receipt turn explicitly requests conflicting actions."""
+
+    raw = str(text or "").strip()
+
+    if not raw:
+        return False
+
+    actions = (
+        _bilingual_brain_receipt_explicit_actions(
+            raw
+        )
+    )
+
+    if len(actions) <= 1:
+        return False
+
+    named_receipt = bool(
+        re.search(
+            r"\b"
+            r"\d{8}T"
+            r"\d{6}\."
+            r"\d{6}Z-"
+            r"[0-9a-fA-F]{16}"
+            r"\.json\b",
+            raw,
+        )
+    )
+
+    # Preserve the frozen convenience workflow for an unnamed latest receipt:
+    # "read my latest receipt" and "verify my latest receipt" both route to
+    # action=latest so the user can identify the concrete immutable receipt
+    # before any named read/verify operation.
+    if (
+        not named_receipt
+        and "latest" in actions
+        and "list" not in actions
+        and actions.issubset(
+            {"latest", "read", "verify"}
+        )
+    ):
+        return False
+
+    return True
+
+
 def _bilingual_brain_receipt_args_from_text(
     text: str,
 ) -> Optional[Dict[str, object]]:
@@ -1528,6 +1659,12 @@ def _bilingual_brain_receipt_args_from_text(
         return None
 
     q = raw.lower()
+
+    # V8: one turn must not silently collapse multiple explicit receipt
+    # operations through parser precedence. Ambiguous compound requests fail
+    # closed before selecting list/latest/read/verify.
+    if _bilingual_brain_receipt_request_is_ambiguous(raw):
+        return None
 
     # Avoid hijacking ordinary shopping/payment receipts. A receipt request
     # must explicitly name the Brain/MeshCore/evidence context.
@@ -1751,8 +1888,27 @@ def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, o
     if _health_intent:
         domains.add("reva_health")
 
+    _receipt_ambiguous = (
+        _bilingual_brain_receipt_request_is_ambiguous(
+            retrieval_query
+        )
+    )
+
+    # V8: an explicitly ambiguous receipt request is meaningful input, but it
+    # is not eligible for any tool domain. Stop classification here instead of
+    # allowing generic words such as "latest", "show", "open", or "read" to
+    # escape into web/UI/files or another unrelated tool family.
+    if _receipt_ambiguous:
+        return {
+            "low_signal": True,
+            "continuation": continuation,
+            "domains": set(),
+            "retrieval_query": retrieval_query,
+        }
+
     _receipt_intent = (
-        _bilingual_brain_receipt_args_from_text(
+        not _receipt_ambiguous
+        and _bilingual_brain_receipt_args_from_text(
             retrieval_query
         )
         is not None
@@ -1789,6 +1945,7 @@ def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, o
 
     if (
         not _receipt_intent
+        and not _receipt_ambiguous
         and not _health_intent
         and has(r"\b(search|web|google|look up|latest|news|weather|forecast|stock price|price of|website|url|https?://|www\.)\b")
     ):
@@ -1803,6 +1960,7 @@ def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, o
         domains.add("web")
     if (
         not _receipt_intent
+        and not _receipt_ambiguous
         and not _health_intent
         and has(r"\b(open|show|toggle|turn on|turn off|disable|enable|switch model|change model|settings|theme|panel)\b")
     ):

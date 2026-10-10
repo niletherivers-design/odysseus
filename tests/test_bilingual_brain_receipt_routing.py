@@ -2063,3 +2063,419 @@ def test_v7_read_allowlist_does_not_upgrade_result_integrity() -> None:
         "does not automatically verify semantic claims"
         in helper
     )
+
+
+# ---------------------------------------------------------------------------
+# REVA Orchestration v8 — compound receipt intents fail closed
+# ---------------------------------------------------------------------------
+
+_V8_RECEIPT = (
+    "20261009T043350.153555Z-"
+    "3d2b1e1fc81ad28d.json"
+)
+
+_V8_SHA256 = (
+    "3d2b1e1fc81ad28d"
+    "733b5be2915c4b7d"
+    "5077f27834467146"
+    "42c0222b45bbb94e"
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "list and show me my latest Bilingual Brain receipt",
+        (
+            "show my latest receipt and verify receipt "
+            f"{_V8_RECEIPT}"
+        ),
+        (
+            "read and verify Brain receipt "
+            f"{_V8_RECEIPT}"
+        ),
+        (
+            "verify and read Brain receipt "
+            f"{_V8_RECEIPT}"
+        ),
+        (
+            "list receipts and read Brain receipt "
+            f"{_V8_RECEIPT}"
+        ),
+        (
+            "read Brain receipt "
+            f"{_V8_RECEIPT} "
+            "and list all receipts"
+        ),
+        (
+            "show latest Brain receipt and read "
+            f"{_V8_RECEIPT}"
+        ),
+        (
+            "verify Brain receipt "
+            f"{_V8_RECEIPT} "
+            "expected sha256 "
+            f"{_V8_SHA256} "
+            "and read it"
+        ),
+        (
+            "read Brain receipt "
+            f"{_V8_RECEIPT} "
+            "then verify it"
+        ),
+        (
+            "latest and list and verify Brain receipt "
+            f"{_V8_RECEIPT}"
+        ),
+    ],
+)
+def test_v8_compound_receipt_intents_fail_closed(
+    text: str,
+) -> None:
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_args_from_text(
+            text
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "list and show me my latest Bilingual Brain receipt",
+        (
+            "show my latest receipt and verify receipt "
+            f"{_V8_RECEIPT}"
+        ),
+        (
+            "read and verify Brain receipt "
+            f"{_V8_RECEIPT}"
+        ),
+        (
+            "verify and read Brain receipt "
+            f"{_V8_RECEIPT}"
+        ),
+        (
+            "list receipts and read Brain receipt "
+            f"{_V8_RECEIPT}"
+        ),
+        (
+            "read Brain receipt "
+            f"{_V8_RECEIPT} "
+            "and list all receipts"
+        ),
+        (
+            "show latest Brain receipt and read "
+            f"{_V8_RECEIPT}"
+        ),
+        (
+            "verify Brain receipt "
+            f"{_V8_RECEIPT} "
+            "expected sha256 "
+            f"{_V8_SHA256} "
+            "and read it"
+        ),
+        (
+            "read Brain receipt "
+            f"{_V8_RECEIPT} "
+            "then verify it"
+        ),
+        (
+            "latest and list and verify Brain receipt "
+            f"{_V8_RECEIPT}"
+        ),
+    ],
+)
+def test_v8_ambiguous_receipt_intents_do_not_escape_to_web_or_ui(
+    text: str,
+) -> None:
+    intent = (
+        agent_loop
+        ._classify_agent_request(
+            [],
+            text,
+        )
+    )
+
+    domains = set(
+        intent.get("domains")
+        or set()
+    )
+
+    assert "brain_receipts" not in domains
+    assert "web" not in domains
+    assert "ui" not in domains
+
+
+def test_v8_single_receipt_intents_remain_preserved() -> None:
+    cases = [
+        (
+            "list all my Bilingual Brain receipts",
+            {
+                "action":
+                    "list",
+                "limit":
+                    10,
+            },
+        ),
+        (
+            "show me my latest Bilingual Brain receipt",
+            {
+                "action":
+                    "latest",
+            },
+        ),
+        (
+            f"read Brain receipt {_V8_RECEIPT}",
+            {
+                "action":
+                    "read",
+                "receipt":
+                    _V8_RECEIPT,
+            },
+        ),
+        (
+            f"verify Brain receipt {_V8_RECEIPT}",
+            {
+                "action":
+                    "verify",
+                "receipt":
+                    _V8_RECEIPT,
+            },
+        ),
+        (
+            (
+                "verify Brain receipt "
+                f"{_V8_RECEIPT} "
+                "expected sha256 "
+                f"{_V8_SHA256}"
+            ),
+            {
+                "action":
+                    "verify",
+                "receipt":
+                    _V8_RECEIPT,
+                "expected_sha256":
+                    _V8_SHA256,
+            },
+        ),
+    ]
+
+    for text, expected in cases:
+        assert (
+            agent_loop
+            ._bilingual_brain_receipt_args_from_text(
+                text
+            )
+            == expected
+        )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "verify my latest Bilingual Brain receipt",
+        "read my latest Bilingual Brain receipt",
+    ],
+)
+def test_v8_unnamed_latest_convenience_workflow_is_preserved(
+    text: str,
+) -> None:
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_args_from_text(
+            text
+        )
+        == {
+            "action":
+                "latest",
+        }
+    )
+
+
+def test_v8_ambiguity_guard_is_receipt_context_bounded() -> None:
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_request_is_ambiguous(
+            "read and verify the API documentation"
+        )
+        is False
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_explicit_actions(
+            "read and verify the API documentation"
+        )
+        == set()
+    )
+
+
+def test_v8_ambiguity_guard_has_no_receipt_or_tool_side_effects() -> None:
+    helper = inspect.getsource(
+        agent_loop
+        ._bilingual_brain_receipt_request_is_ambiguous
+    )
+
+    classifier = inspect.getsource(
+        agent_loop
+        ._classify_agent_request
+    )
+
+    assert "bilingual_brain_receipts(" not in helper
+    assert "open(" not in helper
+    assert "Path(" not in helper
+    assert "subprocess" not in helper
+
+    assert "_receipt_ambiguous" in classifier
+    assert "not _receipt_ambiguous" in classifier
+
+
+def test_v8_ambiguity_guard_runs_before_receipt_precedence() -> None:
+    router = inspect.getsource(
+        agent_loop
+        ._bilingual_brain_receipt_args_from_text
+    )
+
+    guard = router.index(
+        "_bilingual_brain_receipt_request_is_ambiguous"
+    )
+
+    named = router.index(
+        "if receipt_name is not None:"
+    )
+
+    listing = router.index(
+        're.search(r"\\breceipts\\b", q)'
+    )
+
+    assert guard < named
+    assert guard < listing
+
+
+def test_v8_predecessor_terminalization_helpers_remain_preserved() -> None:
+    source = inspect.getsource(
+        agent_loop
+    )
+
+    for helper in (
+        "_bilingual_brain_receipt_list_terminal_summary",
+        "_bilingual_brain_receipt_verify_terminal_summary",
+        "_bilingual_brain_receipt_latest_terminal_summary",
+        "_bilingual_brain_receipt_read_allowlist_summary",
+    ):
+        assert helper in source
+
+    assert (
+        "_receipt_read_terminal_summary"
+        not in source
+    )
+
+    assert (
+        "_receipt_read_terminal_completed"
+        not in source
+    )
+
+
+def test_v8_ambiguous_receipt_classifier_returns_zero_domains() -> None:
+    examples = [
+        "list and show me my latest Bilingual Brain receipt",
+        (
+            "read and verify Brain receipt "
+            f"{_V8_RECEIPT}"
+        ),
+        (
+            "verify and read Brain receipt "
+            f"{_V8_RECEIPT}"
+        ),
+        (
+            "list receipts and read Brain receipt "
+            f"{_V8_RECEIPT}"
+        ),
+        (
+            "show latest Brain receipt and read "
+            f"{_V8_RECEIPT}"
+        ),
+    ]
+
+    for text in examples:
+        intent = (
+            agent_loop
+            ._classify_agent_request(
+                [],
+                text,
+            )
+        )
+
+        assert intent["domains"] == set()
+        assert intent["low_signal"] is True
+
+
+def test_v8_canonical_filename_establishes_receipt_context_for_ambiguity() -> None:
+    text = (
+        "show my latest receipt and verify receipt "
+        f"{_V8_RECEIPT}"
+    )
+
+    actions = (
+        agent_loop
+        ._bilingual_brain_receipt_explicit_actions(
+            text
+        )
+    )
+
+    assert actions == {
+        "latest",
+        "verify",
+    }
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_request_is_ambiguous(
+            text
+        )
+        is True
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_args_from_text(
+            text
+        )
+        is None
+    )
+
+    intent = (
+        agent_loop
+        ._classify_agent_request(
+            [],
+            text,
+        )
+    )
+
+    assert intent["domains"] == set()
+    assert intent["low_signal"] is True
+
+
+def test_v8_canonical_filename_context_does_not_hijack_ordinary_receipts() -> None:
+    text = (
+        "show my latest grocery receipt and verify the total"
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_explicit_actions(
+            text
+        )
+        == set()
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_request_is_ambiguous(
+            text
+        )
+        is False
+    )
