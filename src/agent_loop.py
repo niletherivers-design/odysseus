@@ -542,6 +542,17 @@ _DOMAIN_RULES = {
 #
 # Structural MeshCore evidence does not automatically verify model-generated
 # semantic claims, and production authority remains OFF.
+_DOMAIN_RULES["reva_health"] = (
+    "REVA health inspection rule: Use `reva_health` only for explicit "
+    "operational requests to inspect REVA / Bilingual Brain integration "
+    "health or diagnostics. It is read-only, performs no Brain/model "
+    "execution, creates no evidence receipts, and does not semantically "
+    "verify model claims. PRODUCTION_AUTHORITY remains OFF. Do not use it "
+    "for discussion or analysis about the health architecture, for receipt "
+    "access, or for substantive Bilingual Brain analysis."
+)
+
+
 _DOMAIN_RULES["bilingual_brain"] = (
     "Bilingual Brain execution rule: Use `bilingual_brain` only for explicit "
     "substantive analysis, research, evaluation, investigation, assessment, "
@@ -566,6 +577,7 @@ _DOMAIN_TOOL_MAP = {
     "settings": {"manage_settings", "manage_endpoints", "manage_mcp", "manage_webhooks", "manage_tokens", "app_api"},
     "contacts": {"resolve_contact", "manage_contact"},
     "brain_receipts": {"bilingual_brain_receipts"},
+    "reva_health": {"reva_health"},
     "bilingual_brain": {"bilingual_brain"},
     "integrations": {"api_call"},
 }
@@ -1434,6 +1446,73 @@ def _assistant_requested_followup(messages: List[Dict]) -> bool:
     return False
 
 
+def _reva_health_args_from_text(
+    text: str,
+) -> Optional[Dict[str, object]]:
+    """Map explicit operational REVA-health requests to read-only tool args.
+
+    This is routing only. It performs no network access, does not execute the
+    Brain/model, and never reads or writes evidence receipts itself.
+    """
+
+    raw = str(text or "").strip()
+
+    if not raw:
+        return None
+
+    q = raw.lower()
+
+    # Receipt access owns receipt-specific requests even when words such as
+    # "health", "check", or "status" are also present.
+    if re.search(r"\breceipts?\b", q):
+        return None
+
+    # Discussion / architectural analysis must remain ordinary discussion (or,
+    # when explicitly requested, substantive Bilingual Brain analysis). Merely
+    # mentioning the health tool is not an operational health-check request.
+    if re.match(
+        r"^\s*(?:(?:please|can\s+you|could\s+you|would\s+you)\s+)?"
+        r"(?:analy[sz]e|research|evaluate|investigate|assess|compare|"
+        r"explain|discuss|describe|review)\b",
+        raw,
+        re.IGNORECASE,
+    ):
+        return None
+
+    reva_target = bool(
+        re.search(
+            r"\b(?:reva|bilingual\s+brain(?:\s+integration)?)\b",
+            q,
+        )
+    )
+
+    if not reva_target:
+        return None
+
+    health_signal = bool(
+        re.search(
+            r"\b(?:health|healthy|diagnose|diagnosis|diagnostic|diagnostics)\b",
+            q,
+        )
+    )
+
+    if not health_signal:
+        return None
+
+    operational_intent = bool(
+        re.search(
+            r"\b(?:check|show|run|diagnose|inspect|report|get|"
+            r"status|health|healthy|diagnostic|diagnostics)\b",
+            q,
+        )
+    )
+
+    if not operational_intent:
+        return None
+
+    return {}
+
+
 def _bilingual_brain_receipt_args_from_text(
     text: str,
 ) -> Optional[Dict[str, object]]:
@@ -1598,6 +1677,16 @@ def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, o
         domains.add("documents")
     if "notes_calendar_tasks" not in domains and has(r"\bwrite\b"):
         domains.add("documents")
+    _health_intent = (
+        _reva_health_args_from_text(
+            retrieval_query
+        )
+        is not None
+    )
+
+    if _health_intent:
+        domains.add("reva_health")
+
     _receipt_intent = (
         _bilingual_brain_receipt_args_from_text(
             retrieval_query
@@ -1636,6 +1725,7 @@ def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, o
 
     if (
         not _receipt_intent
+        and not _health_intent
         and has(r"\b(search|web|google|look up|latest|news|weather|forecast|stock price|price of|website|url|https?://|www\.)\b")
     ):
         domains.add("web")
@@ -1649,6 +1739,7 @@ def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, o
         domains.add("web")
     if (
         not _receipt_intent
+        and not _health_intent
         and has(r"\b(open|show|toggle|turn on|turn off|disable|enable|switch model|change model|settings|theme|panel)\b")
     ):
         domains.add("ui")
@@ -5286,6 +5377,28 @@ async def stream_agent_loop(
             )
         )
 
+        _health_router_text = str(
+            _last_user or ""
+        ).strip()
+
+        _health_router_args = (
+            _reva_health_args_from_text(
+                _health_router_text
+            )
+        )
+
+        _deterministic_reva_health_route = (
+            round_num == 1
+            and not guide_only
+            and not _force_answer
+            and _is_ollama_native
+            and "deepseek-r1" in str(model or "").lower()
+            and _relevant_tools is not None
+            and "reva_health" in _relevant_tools
+            and "reva_health" in _tool_names_sent
+            and _health_router_args is not None
+        )
+
         _receipt_router_text = str(
             _last_user or ""
         ).strip()
@@ -5308,7 +5421,41 @@ async def stream_agent_loop(
             and _receipt_router_args is not None
         )
 
-        if _deterministic_receipt_route:
+        if _deterministic_reva_health_route:
+            _health_arguments = json.dumps(
+                _health_router_args,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+
+            async def _deterministic_reva_health_stream():
+                yield "data: " + json.dumps({
+                    "type": "tool_calls",
+                    "calls": [{
+                        "id": (
+                            f"call_{round_num}"
+                            "_reva_health_router"
+                        ),
+                        "name": "reva_health",
+                        "arguments": _health_arguments,
+                        "deterministic_router": True,
+                    }],
+                }) + "\n\n"
+
+                yield "data: [DONE]\n\n"
+
+            _round_stream = (
+                _deterministic_reva_health_stream()
+            )
+
+            logger.warning(
+                "[agent-router] deterministic reva_health route "
+                "selected for explicit local DeepSeek-R1 health request"
+            )
+
+        elif _deterministic_receipt_route:
             _receipt_arguments = json.dumps(
                 _receipt_router_args,
                 sort_keys=True,
