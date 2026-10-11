@@ -1644,6 +1644,269 @@ def _bilingual_brain_receipt_request_is_ambiguous(
     return True
 
 
+def _bilingual_brain_receipt_access_intent_is_explicit(
+    text: str,
+) -> bool:
+    """Return whether one turn explicitly asks to access Brain receipt data.
+
+    This is intentionally narrower than generic receipt-action word detection:
+    the access verb must occur close to the receipt noun. That prevents a
+    foreign clause such as "open settings" from becoming a receipt read merely
+    because the same turn discusses the receipt system.
+    """
+
+    raw = str(text or "").strip()
+
+    if not raw:
+        return False
+
+    q = raw.lower()
+
+    canonical_receipt_named = bool(
+        re.search(
+            r"\b"
+            r"\d{8}T"
+            r"\d{6}\."
+            r"\d{6}Z-"
+            r"[0-9a-fA-F]{16}"
+            r"\.json\b",
+            raw,
+        )
+    )
+
+    explicit_receipt_context = bool(
+        re.search(
+            r"\b(?:bilingual\s+brain|brain|meshcore|evidence)\b",
+            q,
+        )
+    )
+
+    if (
+        re.search(r"\breceipts?\b", q) is None
+        or (
+            not explicit_receipt_context
+            and not canonical_receipt_named
+        )
+    ):
+        return False
+
+    return bool(
+        re.search(
+            r"\b(?:"
+            r"read|open|view|fetch|retrieve|display|inspect|"
+            r"verify|check|validate|list|show"
+            r")\b"
+            r".{0,36}"
+            r"\breceipts?\b",
+            q,
+        )
+        or re.search(
+            r"\b(?:latest|last|newest|recent)\b"
+            r".{0,28}"
+            r"\breceipts?\b",
+            q,
+        )
+        or re.search(
+            r"\b(?:what|which|all|available)\b"
+            r".{0,28}"
+            r"\breceipts?\b",
+            q,
+        )
+    )
+
+
+def _bilingual_brain_receipt_foreign_domains(
+    text: str,
+) -> Set[str]:
+    """Return bounded explicit non-receipt action families from one turn.
+
+    These are action signatures, not topic words. Merely mentioning web,
+    settings, files, email, etc. is insufficient. This helper performs no I/O
+    and executes no tools.
+    """
+
+    raw = str(text or "").strip()
+
+    if not raw:
+        return set()
+
+    q = raw.lower()
+
+    domains: Set[str] = set()
+
+    if re.search(
+        r"\b(?:search|browse|google|look\s+up)\b"
+        r".{0,96}"
+        r"\b(?:web|internet|online|news)\b",
+        q,
+    ):
+        domains.add("web")
+
+    if re.search(
+        r"\b(?:use|ask|have)\b"
+        r".{0,28}"
+        r"\b(?:the\s+)?bilingual\s+brain\b"
+        r".{0,96}"
+        r"\b(?:"
+        r"analy[sz]e|explain|research|evaluate|investigate|"
+        r"assess|compare|reason|determine"
+        r")\b",
+        q,
+    ):
+        domains.add("bilingual_brain")
+
+    if (
+        re.search(
+            r"\b(?:check|show|get|report)\b"
+            r".{0,48}"
+            r"\breva\b"
+            r".{0,28}"
+            r"\bhealth\b",
+            q,
+        )
+        or re.search(
+            r"\breva\s+health(?:\s+status)?\b",
+            q,
+        )
+    ):
+        domains.add("reva_health")
+
+    if re.search(
+        r"\b(?:"
+        r"open|show|toggle|turn\s+on|turn\s+off|disable|enable|"
+        r"switch|change"
+        r")\b"
+        r".{0,48}"
+        r"\b(?:settings?|theme|panel|model)\b",
+        q,
+    ):
+        domains.add("ui")
+
+    if re.search(
+        r"\b(?:"
+        r"read|edit|write|create|delete|remove|run|execute|"
+        r"grep|find|inspect"
+        r")\b"
+        r".{0,64}"
+        r"\b(?:file|folder|directory|repo|repository|terminal|shell)\b",
+        q,
+    ):
+        domains.add("files")
+
+    if re.search(
+        r"\b(?:send|draft|compose|reply|forward|read|list|check)\b"
+        r".{0,64}"
+        r"\b(?:email|mail|inbox)\b",
+        q,
+    ):
+        domains.add("email")
+
+    if re.search(
+        r"\b(?:rename|delete|archive|fork|list|show)\b"
+        r".{0,64}"
+        r"\b(?:chat|session|chat\s+history)\b",
+        q,
+    ):
+        domains.add("sessions")
+
+    if re.search(
+        r"\b(?:create|add|set|schedule)\b"
+        r".{0,64}"
+        r"\b(?:reminder|calendar|meeting|appointment|task|todo|to-do)\b",
+        q,
+    ):
+        domains.add("notes_calendar_tasks")
+
+    if re.search(
+        r"\b(?:call|use|invoke)\b"
+        r".{0,64}"
+        r"\b(?:api[ _]call|integration|home\s*assistant|webhook)\b",
+        q,
+    ):
+        domains.add("integrations")
+
+    return domains
+
+
+def _bilingual_brain_receipt_request_is_mixed_domain(
+    text: str,
+) -> bool:
+    """Fail closed when one turn requests receipt access plus another action."""
+
+    raw = str(text or "").strip()
+
+    if not raw:
+        return False
+
+    if not _bilingual_brain_receipt_access_intent_is_explicit(
+        raw
+    ):
+        return False
+
+    return bool(
+        _bilingual_brain_receipt_foreign_domains(
+            raw
+        )
+    )
+
+
+def _bilingual_brain_receipt_mixed_domain_terminal_summary(
+    text: str,
+) -> str:
+    """Return a bounded clarification for receipt + foreign-domain commands."""
+
+    raw = str(text or "").strip()
+
+    if (
+        not raw
+        or not _bilingual_brain_receipt_request_is_mixed_domain(
+            raw
+        )
+    ):
+        return ""
+
+    foreign_domains = (
+        _bilingual_brain_receipt_foreign_domains(
+            raw
+        )
+    )
+
+    ordered_domains = [
+        domain
+        for domain in (
+            "web",
+            "bilingual_brain",
+            "reva_health",
+            "ui",
+            "files",
+            "email",
+            "sessions",
+            "notes_calendar_tasks",
+            "integrations",
+        )
+        if domain in foreign_domains
+    ]
+
+    if not ordered_domains:
+        return ""
+
+    rendered_domains = ", ".join(
+        ordered_domains
+    )
+
+    return (
+        "Bilingual Brain receipt request contains multiple action domains\n"
+        "- Receipt operation: not run\n"
+        f"- Additional domains: {rendered_domains}\n"
+        "\n"
+        "Send the receipt operation and each non-receipt action as separate "
+        "requests.\n"
+        "\n"
+        "Production authority: OFF. No receipt or other tool was executed, "
+        "and receipt contents were not read or rendered."
+    )
+
+
 def _bilingual_brain_receipt_args_from_text(
     text: str,
 ) -> Optional[Dict[str, object]]:
@@ -1659,6 +1922,14 @@ def _bilingual_brain_receipt_args_from_text(
         return None
 
     q = raw.lower()
+
+    # V10: a receipt operation combined with an explicit non-receipt action
+    # must never collapse to the receipt router merely because receipt routing
+    # has deterministic precedence. Fail closed before v8 receipt-action
+    # ambiguity so words in the foreign clause (for example "latest news")
+    # cannot be misinterpreted as receipt operations.
+    if _bilingual_brain_receipt_request_is_mixed_domain(raw):
+        return None
 
     # V8: one turn must not silently collapse multiple explicit receipt
     # operations through parser precedence. Ambiguous compound requests fail
@@ -1844,6 +2115,14 @@ def _bilingual_brain_receipt_ambiguity_terminal_summary(
 
     raw = str(text or "").strip()
 
+    # V10 mixed-domain receipt commands have their own deterministic
+    # clarification. Do not allow foreign words such as "latest news" to
+    # masquerade as a v8/v9 receipt-action conflict.
+    if _bilingual_brain_receipt_request_is_mixed_domain(
+        raw
+    ):
+        return ""
+
     if (
         not raw
         or not _bilingual_brain_receipt_request_is_ambiguous(
@@ -1910,6 +2189,23 @@ def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, o
             "continuation": False,
             "domains": set(),
             "retrieval_query": text,
+        }
+
+    # V10: receipt access plus another explicit action family is meaningful
+    # input but is not eligible for *any* tool domain in one compound turn.
+    # Return before web/UI/health/files/etc. domain seeding.
+    _receipt_mixed_domain = (
+        _bilingual_brain_receipt_request_is_mixed_domain(
+            retrieval_query
+        )
+    )
+
+    if _receipt_mixed_domain:
+        return {
+            "low_signal": True,
+            "continuation": continuation,
+            "domains": set(),
+            "retrieval_query": retrieval_query,
         }
 
     domains: Set[str] = set()
@@ -4807,6 +5103,80 @@ async def stream_agent_loop(
         temperature = _ody_qwen_temperature_cap(temperature)
     _ody_memory_identity_turn = _looks_like_memory_identity_turn(_last_user)
     _intent = _classify_agent_request(messages, _last_user)
+
+    # V10: a receipt access request combined with a second explicit action
+    # family fails closed before tool selection or model execution. The
+    # clarification contains only bounded domain labels; it never reads or
+    # renders receipt content.
+    _receipt_mixed_domain_query = str(
+        _intent.get("retrieval_query")
+        or _last_user
+    )
+
+    _receipt_mixed_domain_summary = (
+        _bilingual_brain_receipt_mixed_domain_terminal_summary(
+            _receipt_mixed_domain_query
+        )
+    )
+
+    if _receipt_mixed_domain_summary:
+        logger.info(
+            "[agent] deterministic mixed-domain receipt clarification; "
+            "skipping model and tool execution latest=%r",
+            _last_user[:120],
+        )
+
+        yield (
+            "data: "
+            + json.dumps({
+                "delta":
+                    _receipt_mixed_domain_summary,
+            })
+            + "\n\n"
+        )
+
+        metrics = {
+            "model":
+                model,
+            "requested_model":
+                model,
+            "input_tokens":
+                estimate_tokens(messages),
+            "output_tokens":
+                max(
+                    len(
+                        _receipt_mixed_domain_summary
+                    )
+                    // 4,
+                    1,
+                ),
+            "total_time":
+                0,
+            "response_time":
+                0,
+            "agent_rounds":
+                0,
+            "tool_calls":
+                0,
+            "mixed_domain_receipt":
+                True,
+            "deterministic_terminal":
+                True,
+        }
+
+        yield (
+            "data: "
+            + json.dumps({
+                "type":
+                    "metrics",
+                "data":
+                    metrics,
+            })
+            + "\n\n"
+        )
+
+        yield "data: [DONE]\n\n"
+        return
 
     # V9: v8 already fails conflicting receipt operations closed at routing.
     # Give that safe state a deterministic user-visible explanation before

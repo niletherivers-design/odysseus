@@ -2726,3 +2726,459 @@ def test_v9_v8_fail_closed_semantics_remain_preserved() -> None:
 
     assert intent["domains"] == set()
     assert intent["low_signal"] is True
+
+
+# ---------------------------------------------------------------------------
+# REVA Orchestration v10 — receipt + foreign-domain compound fail-closed
+# ---------------------------------------------------------------------------
+
+
+_V10_MIXED_DOMAIN_CASES = [
+    (
+        "read Brain receipt "
+        f"{_V8_RECEIPT} "
+        "and search the web for the latest OpenAI news",
+        {"web"},
+    ),
+    (
+        "verify Brain receipt "
+        f"{_V8_RECEIPT} "
+        "and browse the web for current AI news",
+        {"web"},
+    ),
+    (
+        "read Brain receipt "
+        f"{_V8_RECEIPT} "
+        "and use the Bilingual Brain to analyze quantum computing",
+        {"bilingual_brain"},
+    ),
+    (
+        "verify Brain receipt "
+        f"{_V8_RECEIPT} "
+        "and check REVA health status",
+        {"reva_health"},
+    ),
+    (
+        "read Brain receipt "
+        f"{_V8_RECEIPT} "
+        "and open settings",
+        {"ui"},
+    ),
+    (
+        "list my Bilingual Brain receipts "
+        "and search the web for OpenAI news",
+        {"web"},
+    ),
+    (
+        "show my latest Bilingual Brain receipt "
+        "and search the web for current AI news",
+        {"web"},
+    ),
+    (
+        "verify Brain receipt "
+        f"{_V8_RECEIPT} "
+        "and ask the Bilingual Brain to explain quantum computing",
+        {"bilingual_brain"},
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_foreign_domains"),
+    _V10_MIXED_DOMAIN_CASES,
+)
+def test_v10_mixed_domain_receipt_matrix_fails_closed(
+    text: str,
+    expected_foreign_domains: set[str],
+) -> None:
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_access_intent_is_explicit(
+            text
+        )
+        is True
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_foreign_domains(
+            text
+        )
+        == expected_foreign_domains
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_request_is_mixed_domain(
+            text
+        )
+        is True
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_args_from_text(
+            text
+        )
+        is None
+    )
+
+    # V9 receipt-action ambiguity must not steal the v10 condition.
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_ambiguity_terminal_summary(
+            text
+        )
+        == ""
+    )
+
+    summary = (
+        agent_loop
+        ._bilingual_brain_receipt_mixed_domain_terminal_summary(
+            text
+        )
+    )
+
+    assert summary
+    assert (
+        "contains multiple action domains"
+        in summary
+    )
+    assert (
+        "- Receipt operation: not run"
+        in summary
+    )
+    assert (
+        "Production authority: OFF."
+        in summary
+    )
+
+    assert _V8_RECEIPT not in summary
+    assert _V8_SHA256 not in summary
+    assert "/app/workspace" not in summary
+
+    intent = (
+        agent_loop
+        ._classify_agent_request(
+            [],
+            text,
+        )
+    )
+
+    assert intent["domains"] == set()
+    assert intent["low_signal"] is True
+
+
+def test_v10_latest_web_news_no_longer_becomes_v9_receipt_ambiguity() -> None:
+    text = (
+        "read Brain receipt "
+        f"{_V8_RECEIPT} "
+        "and search the web for the latest OpenAI news"
+    )
+
+    # The legacy receipt action detector still sees lexical "latest"; v10
+    # intentionally handles the mixed-domain condition before that detector
+    # is allowed to determine routing/terminalization.
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_request_is_mixed_domain(
+            text
+        )
+        is True
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_args_from_text(
+            text
+        )
+        is None
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_ambiguity_terminal_summary(
+            text
+        )
+        == ""
+    )
+
+    summary = (
+        agent_loop
+        ._bilingual_brain_receipt_mixed_domain_terminal_summary(
+            text
+        )
+    )
+
+    assert "- Additional domains: web" in summary
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"read Brain receipt {_V8_RECEIPT}",
+        f"verify Brain receipt {_V8_RECEIPT}",
+        "list all my Bilingual Brain receipts",
+        "show me my latest Bilingual Brain receipt",
+        "read my latest Bilingual Brain receipt",
+        "verify my latest Bilingual Brain receipt",
+    ],
+)
+def test_v10_single_receipt_controls_remain_unmixed(
+    text: str,
+) -> None:
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_request_is_mixed_domain(
+            text
+        )
+        is False
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_mixed_domain_terminal_summary(
+            text
+        )
+        == ""
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_args_from_text(
+            text
+        )
+        is not None
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "search the web for the latest OpenAI news",
+        "check REVA health status",
+        "open settings",
+        "use the Bilingual Brain to analyze quantum computing",
+        "read my grocery receipt and search the web for coupons",
+        "tell me about the Bilingual Brain receipt system and open settings",
+        (
+            "read Brain receipt "
+            f"{_V8_RECEIPT} "
+            "about web search history"
+        ),
+        (
+            "read Brain receipt "
+            f"{_V8_RECEIPT} "
+            "and explain the word verify"
+        ),
+    ],
+)
+def test_v10_nonmixed_controls_do_not_trigger(
+    text: str,
+) -> None:
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_request_is_mixed_domain(
+            text
+        )
+        is False
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_mixed_domain_terminal_summary(
+            text
+        )
+        == ""
+    )
+
+
+def test_v10_primary_mixed_domain_summary_is_exact_and_bounded() -> None:
+    text = (
+        "read Brain receipt "
+        f"{_V8_RECEIPT} "
+        "and search the web for the latest OpenAI news"
+    )
+
+    summary = (
+        agent_loop
+        ._bilingual_brain_receipt_mixed_domain_terminal_summary(
+            text
+        )
+    )
+
+    assert summary == (
+        "Bilingual Brain receipt request contains multiple action domains\n"
+        "- Receipt operation: not run\n"
+        "- Additional domains: web\n"
+        "\n"
+        "Send the receipt operation and each non-receipt action as separate "
+        "requests.\n"
+        "\n"
+        "Production authority: OFF. No receipt or other tool was executed, "
+        "and receipt contents were not read or rendered."
+    )
+
+
+def test_v10_multiple_foreign_domains_are_bounded_and_ordered() -> None:
+    text = (
+        "read Brain receipt "
+        f"{_V8_RECEIPT} "
+        "and search the web for AI news "
+        "and open settings"
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_foreign_domains(
+            text
+        )
+        == {
+            "web",
+            "ui",
+        }
+    )
+
+    summary = (
+        agent_loop
+        ._bilingual_brain_receipt_mixed_domain_terminal_summary(
+            text
+        )
+    )
+
+    assert "- Additional domains: web, ui" in summary
+
+
+def test_v10_mixed_domain_helpers_have_no_io_or_tool_execution() -> None:
+    for helper in (
+        agent_loop
+        ._bilingual_brain_receipt_access_intent_is_explicit,
+        agent_loop
+        ._bilingual_brain_receipt_foreign_domains,
+        agent_loop
+        ._bilingual_brain_receipt_request_is_mixed_domain,
+        agent_loop
+        ._bilingual_brain_receipt_mixed_domain_terminal_summary,
+    ):
+        source = inspect.getsource(
+            helper
+        )
+
+        for forbidden in (
+            "open(",
+            "Path(",
+            "subprocess",
+            "bilingual_brain_receipts(",
+            "execute_tool",
+            "llm_call",
+        ):
+            assert forbidden not in source
+
+
+def test_v10_classifier_fails_closed_before_domain_seeding() -> None:
+    source = inspect.getsource(
+        agent_loop._classify_agent_request
+    )
+
+    mixed = source.index(
+        "_receipt_mixed_domain ="
+    )
+
+    domains = source.index(
+        "domains: Set[str] = set()"
+    )
+
+    health = source.index(
+        "_health_intent ="
+    )
+
+    receipt = source.index(
+        "_receipt_ambiguous ="
+    )
+
+    assert mixed < domains
+    assert mixed < health
+    assert mixed < receipt
+
+
+def test_v10_terminal_path_precedes_v9_and_model_pipeline() -> None:
+    source = inspect.getsource(
+        agent_loop.stream_agent_loop
+    )
+
+    classifier = source.index(
+        "_intent = _classify_agent_request"
+    )
+
+    v10_summary = source.index(
+        "_receipt_mixed_domain_summary ="
+    )
+
+    v10_terminal = source.index(
+        "if _receipt_mixed_domain_summary:"
+    )
+
+    v9_summary = source.index(
+        "_receipt_ambiguity_summary ="
+    )
+
+    low_signal = source.index(
+        "_low_signal_turn ="
+    )
+
+    round_loop = source.index(
+        "for round_num in range"
+    )
+
+    assert classifier < v10_summary
+    assert v10_summary < v10_terminal
+    assert v10_terminal < v9_summary
+    assert v10_terminal < low_signal
+    assert v10_terminal < round_loop
+
+    block = source[
+        v10_terminal:v9_summary
+    ]
+
+    assert '"agent_rounds":' in block
+    assert '"tool_calls":' in block
+    assert '"mixed_domain_receipt":' in block
+    assert '"deterministic_terminal":' in block
+
+    assert 'yield "data: [DONE]' in block
+    assert "return" in block
+
+    assert "llm_call" not in block
+    assert "execute_tool" not in block
+    assert "tool_start" not in block
+    assert "tool_output" not in block
+
+
+def test_v10_v9_receipt_action_ambiguity_remains_preserved() -> None:
+    text = (
+        "read and verify Brain receipt "
+        f"{_V8_RECEIPT}"
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_request_is_mixed_domain(
+            text
+        )
+        is False
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_request_is_ambiguous(
+            text
+        )
+        is True
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_ambiguity_terminal_summary(
+            text
+        )
+    )
