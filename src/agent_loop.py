@@ -1832,6 +1832,64 @@ def _bilingual_brain_receipt_args_from_text(
     }
 
 
+def _bilingual_brain_receipt_ambiguity_terminal_summary(
+    text: str,
+) -> str:
+    """Return a bounded clarification for a conflicting receipt command.
+
+    The response is derived only from fixed operation labels detected in the
+    user's command. It never reads receipt files, renders receipt content, or
+    upgrades receipt integrity/semantic trust.
+    """
+
+    raw = str(text or "").strip()
+
+    if (
+        not raw
+        or not _bilingual_brain_receipt_request_is_ambiguous(
+            raw
+        )
+    ):
+        return ""
+
+    actions = (
+        _bilingual_brain_receipt_explicit_actions(
+            raw
+        )
+    )
+
+    ordered_actions = [
+        action
+        for action in (
+            "list",
+            "latest",
+            "read",
+            "verify",
+        )
+        if action in actions
+    ]
+
+    if len(ordered_actions) < 2:
+        return ""
+
+    rendered_actions = ", ".join(
+        ordered_actions
+    )
+
+    return (
+        "Bilingual Brain receipt request is ambiguous\n"
+        f"- Requested actions: {rendered_actions}\n"
+        "- Receipt operation: not run\n"
+        "\n"
+        "Choose exactly one action: list receipts, show the latest "
+        "receipt, read one named receipt, or verify one named receipt "
+        "(optionally with an expected SHA-256).\n"
+        "\n"
+        "Production authority: OFF. No receipt tool was executed, "
+        "and receipt contents were not read or rendered."
+    )
+
+
 def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, object]:
     """Classify only whether this turn deserves domain tool retrieval.
 
@@ -4749,6 +4807,81 @@ async def stream_agent_loop(
         temperature = _ody_qwen_temperature_cap(temperature)
     _ody_memory_identity_turn = _looks_like_memory_identity_turn(_last_user)
     _intent = _classify_agent_request(messages, _last_user)
+
+    # V9: v8 already fails conflicting receipt operations closed at routing.
+    # Give that safe state a deterministic user-visible explanation before
+    # tool selection or model execution. This path performs no receipt read,
+    # no tool call, and no model round.
+    _receipt_ambiguity_query = str(
+        _intent.get("retrieval_query")
+        or _last_user
+    )
+
+    _receipt_ambiguity_summary = (
+        _bilingual_brain_receipt_ambiguity_terminal_summary(
+            _receipt_ambiguity_query
+        )
+    )
+
+    if _receipt_ambiguity_summary:
+        logger.info(
+            "[agent] deterministic ambiguous receipt clarification; "
+            "skipping model and tool execution latest=%r",
+            _last_user[:120],
+        )
+
+        yield (
+            "data: "
+            + json.dumps({
+                "delta":
+                    _receipt_ambiguity_summary,
+            })
+            + "\n\n"
+        )
+
+        metrics = {
+            "model":
+                model,
+            "requested_model":
+                model,
+            "input_tokens":
+                estimate_tokens(messages),
+            "output_tokens":
+                max(
+                    len(
+                        _receipt_ambiguity_summary
+                    )
+                    // 4,
+                    1,
+                ),
+            "total_time":
+                0,
+            "response_time":
+                0,
+            "agent_rounds":
+                0,
+            "tool_calls":
+                0,
+            "ambiguous_receipt":
+                True,
+            "deterministic_terminal":
+                True,
+        }
+
+        yield (
+            "data: "
+            + json.dumps({
+                "type":
+                    "metrics",
+                "data":
+                    metrics,
+            })
+            + "\n\n"
+        )
+
+        yield "data: [DONE]\n\n"
+        return
+
     _low_signal_turn = bool(_intent.get("low_signal"))
     _casual_low_signal_turn = _is_casual_low_signal(_last_user)
     _existing_conversation = _user_turn_count(messages) > 1

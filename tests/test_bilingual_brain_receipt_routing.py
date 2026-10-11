@@ -2479,3 +2479,250 @@ def test_v8_canonical_filename_context_does_not_hijack_ordinary_receipts() -> No
         )
         is False
     )
+
+
+# ---------------------------------------------------------------------------
+# REVA Orchestration v9 — deterministic ambiguous receipt clarification
+# ---------------------------------------------------------------------------
+
+
+def test_v9_ambiguous_receipt_terminal_summary_is_bounded() -> None:
+    text = (
+        "read and verify Brain receipt "
+        f"{_V8_RECEIPT}"
+    )
+
+    summary = (
+        agent_loop
+        ._bilingual_brain_receipt_ambiguity_terminal_summary(
+            text
+        )
+    )
+
+    assert summary == (
+        "Bilingual Brain receipt request is ambiguous\n"
+        "- Requested actions: read, verify\n"
+        "- Receipt operation: not run\n"
+        "\n"
+        "Choose exactly one action: list receipts, show the latest "
+        "receipt, read one named receipt, or verify one named receipt "
+        "(optionally with an expected SHA-256).\n"
+        "\n"
+        "Production authority: OFF. No receipt tool was executed, "
+        "and receipt contents were not read or rendered."
+    )
+
+    assert _V8_RECEIPT not in summary
+    assert _V8_SHA256 not in summary
+    assert "/app/workspace" not in summary
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "list and show me my latest Bilingual Brain receipt",
+        (
+            "show my latest receipt and verify receipt "
+            f"{_V8_RECEIPT}"
+        ),
+        (
+            "read and verify Brain receipt "
+            f"{_V8_RECEIPT}"
+        ),
+        (
+            "verify and read Brain receipt "
+            f"{_V8_RECEIPT}"
+        ),
+        (
+            "list receipts and read Brain receipt "
+            f"{_V8_RECEIPT}"
+        ),
+        (
+            "read Brain receipt "
+            f"{_V8_RECEIPT} "
+            "and list all receipts"
+        ),
+        (
+            "show latest Brain receipt and read "
+            f"{_V8_RECEIPT}"
+        ),
+        (
+            "verify Brain receipt "
+            f"{_V8_RECEIPT} "
+            "expected sha256 "
+            f"{_V8_SHA256} "
+            "and read it"
+        ),
+        (
+            "read Brain receipt "
+            f"{_V8_RECEIPT} "
+            "then verify it"
+        ),
+        (
+            "latest and list and verify Brain receipt "
+            f"{_V8_RECEIPT}"
+        ),
+    ],
+)
+def test_v9_all_v8_ambiguity_cases_get_clarification(
+    text: str,
+) -> None:
+    summary = (
+        agent_loop
+        ._bilingual_brain_receipt_ambiguity_terminal_summary(
+            text
+        )
+    )
+
+    assert summary
+    assert "request is ambiguous" in summary
+    assert "Receipt operation: not run" in summary
+    assert "Production authority: OFF." in summary
+
+    assert _V8_RECEIPT not in summary
+    assert _V8_SHA256 not in summary
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "list all my Bilingual Brain receipts",
+        "show me my latest Bilingual Brain receipt",
+        f"read Brain receipt {_V8_RECEIPT}",
+        f"verify Brain receipt {_V8_RECEIPT}",
+        "read and verify the API documentation",
+        "show my latest grocery receipt and verify the total",
+    ],
+)
+def test_v9_nonambiguous_requests_do_not_get_receipt_clarification(
+    text: str,
+) -> None:
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_ambiguity_terminal_summary(
+            text
+        )
+        == ""
+    )
+
+
+def test_v9_clarification_helper_has_no_io_or_tool_execution() -> None:
+    source = inspect.getsource(
+        agent_loop
+        ._bilingual_brain_receipt_ambiguity_terminal_summary
+    )
+
+    for forbidden in (
+        "open(",
+        "Path(",
+        "subprocess",
+        "bilingual_brain_receipts(",
+        "execute_tool",
+        "llm_call",
+    ):
+        assert forbidden not in source
+
+
+def test_v9_clarification_runs_before_model_and_tool_pipeline() -> None:
+    source = inspect.getsource(
+        agent_loop.stream_agent_loop
+    )
+
+    classifier = source.index(
+        "_intent = _classify_agent_request"
+    )
+
+    clarification = source.index(
+        "_receipt_ambiguity_summary ="
+    )
+
+    terminal = source.index(
+        "if _receipt_ambiguity_summary:"
+    )
+
+    low_signal = source.index(
+        "_low_signal_turn ="
+    )
+
+    tool_seed = source.index(
+        "If deterministic domain detection fired"
+    )
+
+    round_loop = source.index(
+        "for round_num in range"
+    )
+
+    assert classifier < clarification
+    assert clarification < terminal
+    assert terminal < low_signal
+    assert terminal < tool_seed
+    assert terminal < round_loop
+
+
+def test_v9_clarification_terminal_path_is_zero_round_zero_tool() -> None:
+    source = inspect.getsource(
+        agent_loop.stream_agent_loop
+    )
+
+    start = source.index(
+        "if _receipt_ambiguity_summary:"
+    )
+
+    end = source.index(
+        "_low_signal_turn =",
+        start,
+    )
+
+    block = source[
+        start:end
+    ]
+
+    assert '"agent_rounds":' in block
+    assert '"tool_calls":' in block
+    assert '"ambiguous_receipt":' in block
+    assert '"deterministic_terminal":' in block
+
+    assert "agent_rounds" in block
+    assert "tool_calls" in block
+
+    assert 'yield "data: [DONE]' in block
+    assert "return" in block
+
+    assert "llm_call" not in block
+    assert "execute_tool" not in block
+    assert "tool_start" not in block
+    assert "tool_output" not in block
+
+
+def test_v9_v8_fail_closed_semantics_remain_preserved() -> None:
+    text = (
+        "read and verify Brain receipt "
+        f"{_V8_RECEIPT}"
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_request_is_ambiguous(
+            text
+        )
+        is True
+    )
+
+    assert (
+        agent_loop
+        ._bilingual_brain_receipt_args_from_text(
+            text
+        )
+        is None
+    )
+
+    intent = (
+        agent_loop
+        ._classify_agent_request(
+            [],
+            text,
+        )
+    )
+
+    assert intent["domains"] == set()
+    assert intent["low_signal"] is True
